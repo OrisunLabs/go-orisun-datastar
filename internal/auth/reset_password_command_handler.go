@@ -51,8 +51,11 @@ func ResetPasswordCommandHandler(ctx context.Context, command ResetPasswordComma
 		return errors.New("password reset already completed")
 	}
 
+	if model.userRegisteredID != user.UserRegisteredID {
+		return errors.New("password reset request does not belong to registered user")
+	}
 	eventID := uuidv7.NewString()
-	event, err := NewPasswordResetCompletedEvent(eventID, time.Now(), verification.ID, user.UserRegisteredID, string(hash), nil)
+	event, err := NewPasswordResetCompletedEvent(eventID, time.Now(), model.passwordResetRequestedID, model.userRegisteredID, string(hash), nil)
 	if err != nil {
 		return err
 	}
@@ -61,11 +64,15 @@ func ResetPasswordCommandHandler(ctx context.Context, command ResetPasswordComma
 }
 
 type resetPasswordContext struct {
-	requestExists    bool
-	alreadyCompleted bool
-	position         eventstore.Position
-	events           []eventstore.ResolvedEvent
-	query            eventstore.Query
+	passwordResetRequestedID  string
+	userRegisteredID          string
+	completedRequestID        string
+	completedUserRegisteredID string
+	requestExists             bool
+	alreadyCompleted          bool
+	position                  eventstore.Position
+	events                    []eventstore.ResolvedEvent
+	query                     eventstore.Query
 }
 
 func loadResetPasswordContext(ctx context.Context, passwordResetRequestedID string, retriever eventstore.LatestRetriever) (*resetPasswordContext, error) {
@@ -77,25 +84,42 @@ func loadResetPasswordContext(ctx context.Context, passwordResetRequestedID stri
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
+	model := &resetPasswordContext{passwordResetRequestedID: passwordResetRequestedID, position: latest.ContextPosition, events: events, query: query}
+	for _, resolved := range events {
+		if err := model.handle(resolved); err != nil {
 			return nil, err
 		}
 	}
-	model := &resetPasswordContext{position: latest.ContextPosition, events: events, query: query}
-	for _, event := range events {
-		model.handle(event)
+	if model.alreadyCompleted && (model.completedRequestID != model.passwordResetRequestedID || model.completedUserRegisteredID != model.userRegisteredID) {
+		return nil, errors.New("password reset completion scope does not match request context")
 	}
 	return model, nil
 }
 
-func (m *resetPasswordContext) handle(resolved eventstore.ResolvedEvent) {
+func (m *resetPasswordContext) handle(resolved eventstore.ResolvedEvent) error {
 	switch resolved.Event.EventType {
 	case PasswordResetRequested:
+		requested, err := DecodePasswordResetRequestedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		if requested.PasswordResetRequestedID != m.passwordResetRequestedID {
+			return errors.New("password reset request does not match context")
+		}
+		m.userRegisteredID = requested.Scopes.UserRegisteredID
 		m.requestExists = true
 	case PasswordResetCompleted:
+		completed, err := DecodePasswordResetCompletedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		m.completedRequestID = completed.Scopes.PasswordResetRequestedID
+		m.completedUserRegisteredID = completed.Scopes.UserRegisteredID
 		m.alreadyCompleted = true
+	default:
+		return eventstore.ErrInvalidEvent
 	}
+	return nil
 }
 
 func resetPasswordCombineQueries(queries ...eventstore.Query) eventstore.Query {

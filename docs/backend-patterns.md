@@ -118,3 +118,15 @@ Password-reset request event construction and persistence now live directly in `
 ## Credential ownership
 
 Password changes require the credential lookup's returned registered-user identity to match the command user. Account-deletion requests require both the registered-user identity and auth-user ID to match. These checks run before password verification, authority loading or persistence. Real-Orisun tests cover matching owners, mismatched identities, missing owners, incorrect passwords and lookup failures, and verify rejected commands append no facts. Password-change ownership is based on the stable registered-user identity; deletion additionally binds the auth account being deleted.
+
+## Password-reset authority
+
+A reset request requires a decoded registration event matching the resolved user's stable identity before generating a token or reading the subject key. Unknown-user lookup behavior is unchanged. Reset completion reconstructs the request's owner from its strict event contract, rejects a different resolved user and constructs the completion using the authoritative request identity. Existing completion facts must reference that same request and owner; inconsistent ancestry is an error rather than an ordinary already-completed result.
+
+Both commands retain their existing query shapes and exact observed context positions. Real-Orisun regressions cover owner mismatches, missing registration/request, valid requests, reused resets and inconsistent completion ancestry. A gated concurrent-read test verifies two attempts cannot both complete the same reset. No event-format changes, migrations or data resets are introduced.
+
+## Deletion completion identity
+
+Deletion completion loads the exact request ID and its completion evidence, then strictly checks the registered-user identity, auth-user ID and request ancestry before any destructive effect or idempotent return. Data deletion, key destruction and the saved completion use identities from the validated request. A later request for the same user cannot replace the authority selected for an earlier delivery. Exact retries perform no repeated effects; inconsistent historical completion facts are rejected.
+
+The bounded source query uses the existing `account_deletion_requested_id` and `deletion_ancestry` indexes, with `eventType` in both criteria. The exact returned observation position remains the save guard. Real-Orisun regressions cover mismatched command identities, malformed/missing requests, inconsistent completion owners, later requests and repeated delivery. The existing data-deletion/key-destruction/event-save order is unchanged; this slice does not make external effects atomic with event persistence. No schema migration or data reset is introduced.

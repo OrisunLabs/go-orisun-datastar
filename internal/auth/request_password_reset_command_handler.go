@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -39,6 +40,9 @@ func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPass
 		return RequestPasswordResetResult{}, err
 	}
 
+	if !model.userExists {
+		return RequestPasswordResetResult{}, errors.New("registered user event not found")
+	}
 	token, err := randomToken(32)
 	if err != nil {
 		return RequestPasswordResetResult{}, err
@@ -63,9 +67,10 @@ func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPass
 }
 
 type requestPasswordResetContext struct {
-	position eventstore.Position
-	events   []eventstore.ResolvedEvent
-	query    eventstore.Query
+	userExists bool
+	position   eventstore.Position
+	events     []eventstore.ResolvedEvent
+	query      eventstore.Query
 }
 
 func loadRequestPasswordResetContext(ctx context.Context, user views.User, retriever eventstore.LatestRetriever) (*requestPasswordResetContext, error) {
@@ -75,12 +80,17 @@ func loadRequestPasswordResetContext(ctx context.Context, user views.User, retri
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
+	model := &requestPasswordResetContext{position: latest.ContextPosition, events: events, query: query}
+	for _, resolved := range events {
+		registered, err := DecodeUserRegisteredEvent(resolved.Event)
+		if err != nil {
 			return nil, err
 		}
+		if registered.UserRegisteredID != user.UserRegisteredID {
+			return nil, errors.New("registered user event does not match context")
+		}
+		model.userExists = true
 	}
-	model := &requestPasswordResetContext{position: latest.ContextPosition, events: events, query: query}
 	return model, nil
 }
 

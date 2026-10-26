@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,12 +92,7 @@ func authProjectionType(kind string, source ProfileSource) bool {
 	case UserRegistered, UserNameChanged, EmailVerificationOTPGenerated, EmailVerificationOTPValidated, PasswordResetRequested, PasswordResetCompleted, PasswordChanged:
 		return true
 	}
-	for _, eventType := range source.EventTypes {
-		if kind == eventType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(source.EventTypes, kind)
 }
 func decryptAuthValue(ctx context.Context, keys SubjectPiiKeyReader, user string, value protectedpii.Value) (string, error) {
 	key, ok, err := keys.GetSubjectDataKey(ctx, user)
