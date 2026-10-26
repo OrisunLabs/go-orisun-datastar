@@ -116,10 +116,22 @@ func (w *memoryWatcher) Stop() error {
 	return nil
 }
 
+// The store lock serializes producers and excludes watcher removal/closure.
+// When a slow consumer fills the queue, retain the newest snapshot by evicting
+// the oldest pending entry. Watchers carry view state, not a durable event log.
 func (w *memoryWatcher) sendLocked(entry Entry) {
 	select {
 	case <-w.done:
+		return
 	case w.updates <- entry:
+		return
 	default:
 	}
+
+	// The consumer may have drained the queue since the first select.
+	select {
+	case <-w.updates:
+	default:
+	}
+	w.updates <- entry
 }
