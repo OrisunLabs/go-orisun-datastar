@@ -10,7 +10,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -34,7 +33,7 @@ func registeredAuthEvent(t *testing.T, id string) eventstore.DomainEvent {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return mustAuthEvent(NewUserRegisteredEvent(id, "test-user", "test@example.com", "", "", 0, testAuthHash(t), key, nil))
+	return mustAuthEvent(NewUserRegisteredEvent(id, "test-user", "test@example.com", "", "", 0, testAuthHash(t), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil))
 }
 
 func TestAuthContractsRejectMalformedFactsBeforeConsumerEffects(t *testing.T) {
@@ -47,6 +46,9 @@ func TestAuthContractsRejectMalformedFactsBeforeConsumerEffects(t *testing.T) {
 	hash := testAuthHash(t)
 	events := []eventstore.DomainEvent{
 		registeredAuthEvent(t, user),
+		registrationStartedAuthEvent(t, user),
+		mustAuthEvent(NewUserRegistrationCompletedEvent(uuidv7.NewString(), user, otp, uuidv7.NewString(), now, nil)),
+		mustAuthEvent(NewUserRegistrationFailedEvent(uuidv7.NewString(), user, now, nil)),
 		mustAuthEvent(NewUserNameChangedEvent(uuidv7.NewString(), "Ada", now, user, key, nil)),
 		mustAuthEvent(NewEmailVerificationOTPGeneratedEvent(otp, "123456", now, user, nil)),
 		mustAuthEvent(NewEmailVerificationOTPValidatedEvent(uuidv7.NewString(), now, otp, user, nil)),
@@ -103,15 +105,24 @@ func TestAuthContractsRejectMalformedFactsBeforeConsumerEffects(t *testing.T) {
 
 func TestGenerateOTPRejectsCorruptRegisteredAuthority(t *testing.T) {
 	user := uuidv7.NewString()
-	root := registeredAuthEvent(t, user)
+	root := registrationStartedAuthEvent(t, user)
 	root.Data["unexpected"] = true
 	store := eventstoretest.New(t, root)
-	_, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{User: views.User{UserRegisteredID: user}}, store, store)
+	_, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: user}, store, store)
 	if !errors.Is(err, eventstore.ErrInvalidEvent) {
 		t.Fatalf("corrupt authority: %v", err)
 	}
-	events, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}, {Key: ScopeUserRegisteredIDField, Value: user}}}}})
+	events, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}, {Key: ScopeUserRegistrationStartedIDField, Value: user}}}}})
 	if err != nil || len(events) != 0 {
 		t.Fatalf("invalid OTP append: %v %v", events, err)
 	}
+}
+
+func registrationStartedAuthEvent(t *testing.T, id string) eventstore.DomainEvent {
+	t.Helper()
+	key, err := protectedpii.GenerateSubjectDataKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustAuthEvent(NewUserRegistrationStartedEvent(id, uuidv7.NewString(), "pending-user", "pending@example.com", "Pending", "User", 1990, testAuthHash(t), time.Now(), key, nil))
 }

@@ -9,6 +9,9 @@ import (
 
 func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 	return []eventstore.BoundaryIndexDefinition{
+		{Name: "registration_started_id", Fields: []string{auth.UserRegistrationStartedIDField}, EventTypes: []string{auth.UserRegistrationStarted}},
+		{Name: "registration_user", Fields: []string{"userId"}, EventTypes: []string{auth.UserRegistrationStarted}},
+		{Name: "registration_ancestry", Fields: []string{auth.ScopeUserRegistrationStartedIDField}, EventTypes: []string{auth.EmailVerificationOTPGenerated, auth.EmailVerificationOTPValidated, auth.UserRegistrationCompleted, auth.UserRegistrationFailed}},
 		{
 			Name:       "user_registered_email",
 			Fields:     []string{auth.UserRegisteredEmailHashField},
@@ -49,8 +52,6 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			Fields: []string{auth.ScopeUserRegisteredIDField},
 			EventTypes: []string{
 				auth.UserNameChanged,
-				auth.EmailVerificationOTPGenerated,
-				auth.EmailVerificationOTPValidated,
 				auth.PasswordResetRequested,
 				auth.PasswordResetCompleted,
 				auth.PasswordChanged,

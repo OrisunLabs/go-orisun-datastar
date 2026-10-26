@@ -245,6 +245,12 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 			},
 		},
 		{
+			name: "registration completion",
+			create: func() (eventHandler, error) {
+				return auth.NewRegistrationCompletionEventHandler(store, components.checkpointer, store, store, components.piiKeys, logger)
+			},
+		},
+		{
 			name: "email validation OTP",
 			create: func() (eventHandler, error) {
 				return auth.NewEmailValidationOTPToBeSentEventHandler(store, components.checkpointer, store, store, components.emailSender, components.piiKeys, logger)

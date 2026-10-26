@@ -58,8 +58,6 @@ func authUserProjectionEventHandlerQuery(source ProfileSource) eventstore.Query 
 	query := eventstore.Query{Criteria: []eventstore.Criterion{
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserNameChanged}}},
-		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}}},
-		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPValidated}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetRequested}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetCompleted}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordChanged}}},

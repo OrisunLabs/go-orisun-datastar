@@ -3,8 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/email"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -14,19 +16,19 @@ import (
 )
 
 func TestSendEmailValidationOTPOwnsContextAndSkipsRedelivery(t *testing.T) {
-	store, user, keys := emailCommandFixture(t)
-	generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{User: user}, store, store)
+	store, registration, keys := pendingEmailFixture(t)
+	generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: registration.UserRegistrationStartedID}, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sender := &commandTestEmailSender{}
-	command := SendEmailValidationOTPCommand{UserRegisteredID: user.UserRegisteredID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
+	command := SendEmailValidationOTPCommand{UserRegistrationStartedID: registration.UserRegistrationStartedID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
 	for range 2 {
 		if err := SendEmailValidationOTPCommandHandler(t.Context(), command, store, store, sender, keys); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(sender.messages) != 1 || sender.messages[0].To != user.Email || !strings.Contains(sender.messages[0].Body, generated.Code) {
+	if len(sender.messages) != 1 || sender.messages[0].To != "pending@example.com" || !strings.Contains(sender.messages[0].Body, generated.Code) {
 		t.Fatal("OTP redelivery or context changed")
 	}
 	occurrences, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPSent}, {Key: ScopeEmailVerificationOTPGeneratedIDField, Value: generated.EmailVerificationOTPGeneratedID}}}}})
@@ -43,7 +45,7 @@ func emailCommandFixture(t *testing.T) (*eventstore.EmbeddedOrisun, views.User, 
 	t.Helper()
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "email-user", Email: "email@example.com", Password: "secret123"}, store, store, keys)
+	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "email-user", Email: "email@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: testAuthHash(t), EmailVerifiedAt: time.Unix(1, 0).UTC()}, store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,4 +63,15 @@ func (s *commandTestEmailSender) Send(_ context.Context, message email.Message) 
 	}
 	s.messages = append(s.messages, message)
 	return nil
+}
+
+func pendingEmailFixture(t *testing.T) (*eventstore.EmbeddedOrisun, StartUserRegistrationResult, *authTestKeys) {
+	t.Helper()
+	store := eventstoretest.New(t)
+	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
+	registration, err := StartUserRegistrationCommandHandler(t.Context(), StartUserRegistrationCommand{Username: "pending-user", Email: "pending@example.com", Password: "secret123"}, store, store, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, registration, keys
 }

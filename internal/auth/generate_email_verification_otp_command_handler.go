@@ -8,12 +8,11 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 type GenerateEmailVerificationOTPCommand struct {
-	User     views.User
-	Metadata CommandMetadata
+	UserRegistrationStartedID string
+	Metadata                  CommandMetadata
 }
 
 type GenerateEmailVerificationOTPResult struct {
@@ -31,8 +30,8 @@ func GenerateEmailVerificationOTPCommandHandler(ctx context.Context, command Gen
 	if err != nil {
 		return GenerateEmailVerificationOTPResult{}, err
 	}
-	if !model.userExists {
-		return GenerateEmailVerificationOTPResult{}, errors.New("registered user event not found")
+	if !model.registrationExists {
+		return GenerateEmailVerificationOTPResult{}, errors.New("registration start event not found")
 	}
 	if model.emailValidated || model.latestOTPExpiresAt.After(time.Now()) {
 		return GenerateEmailVerificationOTPResult{Skipped: true}, nil
@@ -44,7 +43,7 @@ func GenerateEmailVerificationOTPCommandHandler(ctx context.Context, command Gen
 	}
 	otpID := uuidv7.NewString()
 	expiresAt := time.Now().Add(15 * time.Minute)
-	event, err := NewEmailVerificationOTPGeneratedEvent(otpID, code, expiresAt, command.User.UserRegisteredID, nil)
+	event, err := NewEmailVerificationOTPGeneratedEvent(otpID, code, expiresAt, command.UserRegistrationStartedID, nil)
 	if err != nil {
 		return GenerateEmailVerificationOTPResult{}, err
 	}
@@ -55,7 +54,7 @@ func GenerateEmailVerificationOTPCommandHandler(ctx context.Context, command Gen
 }
 
 type generateEmailVerificationOTPContext struct {
-	userExists         bool
+	registrationExists bool
 	emailValidated     bool
 	latestOTPExpiresAt time.Time
 	position           eventstore.Position
@@ -64,8 +63,8 @@ type generateEmailVerificationOTPContext struct {
 }
 
 func loadGenerateEmailVerificationOTPContext(ctx context.Context, command GenerateEmailVerificationOTPCommand, retriever eventstore.LatestRetriever) (*generateEmailVerificationOTPContext, error) {
-	userQuery := generateEmailVerificationOTPUserRegisteredQuery(command.User.UserRegisteredID)
-	stateQuery := generateEmailVerificationOTPEmailVerificationOTPStateQuery(command.User.UserRegisteredID)
+	userQuery := generateEmailVerificationOTPUserRegistrationStartedQuery(command.UserRegistrationStartedID)
+	stateQuery := generateEmailVerificationOTPEmailVerificationOTPStateQuery(command.UserRegistrationStartedID)
 	query := generateEmailVerificationOTPCombineQueries(userQuery, stateQuery)
 
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
@@ -88,8 +87,8 @@ func loadGenerateEmailVerificationOTPContext(ctx context.Context, command Genera
 
 func (m *generateEmailVerificationOTPContext) handle(resolved eventstore.ResolvedEvent) {
 	switch resolved.Event.EventType {
-	case UserRegistered:
-		m.userExists = true
+	case UserRegistrationStarted:
+		m.registrationExists = true
 	case EmailVerificationOTPGenerated:
 		expiresAt, _ := resolved.Event.Data[EmailVerificationOTPExpiresAtField].(string)
 		parsed, err := time.Parse(time.RFC3339, expiresAt)
@@ -109,16 +108,16 @@ func generateEmailVerificationOTPCombineQueries(queries ...eventstore.Query) eve
 	return combined
 }
 
-func generateEmailVerificationOTPEmailVerificationOTPStateQuery(userRegisteredID string) eventstore.Query {
+func generateEmailVerificationOTPEmailVerificationOTPStateQuery(registrationID string) eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{
-		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}, {Key: ScopeUserRegisteredIDField, Value: userRegisteredID}}},
-		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPValidated}, {Key: ScopeUserRegisteredIDField, Value: userRegisteredID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}, {Key: ScopeUserRegistrationStartedIDField, Value: registrationID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPValidated}, {Key: ScopeUserRegistrationStartedIDField, Value: registrationID}}},
 	}}
 }
 
-func generateEmailVerificationOTPUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+func generateEmailVerificationOTPUserRegistrationStartedQuery(registrationID string) eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: UserRegistered},
-		{Key: UserRegisteredIDField, Value: userRegisteredID},
+		{Key: eventstore.EventTypeField, Value: UserRegistrationStarted},
+		{Key: UserRegistrationStartedIDField, Value: registrationID},
 	}}}}
 }

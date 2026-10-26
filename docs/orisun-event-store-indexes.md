@@ -6,6 +6,9 @@ PII lookup indexes use protected blind-index fields, not plaintext event fields.
 
 | Index | Fields | Event Types | Query Shape |
 | --- | --- | --- | --- |
+| `registration_started_id` | `userRegistrationStartedId` | `UserRegistrationStarted` | Pending registration authority. |
+| `registration_user` | `userId` | `UserRegistrationStarted` | Planned accepted identity collision guard. |
+| `registration_ancestry` | `scopes.userRegistrationStartedId` | OTP generated/validated, registration completed/failed | Pending workflow context and completion. |
 | `user_registered_email` | `emailHash` | `UserRegistered` | Registration duplicate email check. |
 | `user_registered_username` | `usernameHash` | `UserRegistered` | Registration duplicate username check. |
 | `user_registered_id` | `userRegisteredId` | `UserRegistered` | User existence/context loads. |
@@ -13,7 +16,7 @@ PII lookup indexes use protected blind-index fields, not plaintext event fields.
 | `otp_ancestry` | `scopes.emailVerificationOTPGeneratedId` | `EmailVerificationOTPValidated`, `EmailVerificationOTPSent` | OTP sent/validated idempotency. |
 | `password_reset_requested_id` | `passwordResetRequestedId` | `PasswordResetRequested` | Password reset email/send completion context. |
 | `reset_ancestry` | `scopes.passwordResetRequestedId` | `PasswordResetEmailSent`, `PasswordResetCompleted` | Password reset idempotency and completion. |
-| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendant events | Per-user contexts and projections; latest password-change/reset-completion authority for password-authorized mutations. |
+| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendants excluding registration OTPs | Per-user contexts and projections; latest password-change/reset-completion authority for password-authorized mutations. |
 | `profile_owner` | `userId` | Profile image/header/bio events | Cross-domain user reference for latest profile authority and consistency guards. |
 | `todo_created` | `todoCreatedId`, `userId` | `TodoCreated` | Creation identity, ownership and collision guard. |
 | `todo_ancestry` | `scopes.todoCreatedId`, `userId` | `TodoRenamed`, `TodoCompleted`, `TodoReopened`, `TodoDeleted` | Per-todo authority, ownership and idempotency context. |
@@ -24,7 +27,7 @@ PII lookup indexes use protected blind-index fields, not plaintext event fields.
 | `login_attempt_ip_hash` | `ipAddressHash` | `LoginAttemptRecorded` | Security audit lookup by IP blind index. |
 | `login_user` | `user.userRegisteredId` | `LoginAttemptRecorded` | Successful login audit lookup by registered user. |
 
-OTP validation batches the latest generated OTP and registered-user criteria in its first read, then checks validation of that discovered OTP in a second read. Both exact queries and positions are checked by one V2 append; the existing generated-by-user and validated-by-OTP indexes support these reads.
+OTP validation batches the latest generated OTP and pending-registration criteria in its first read, then checks validation of that discovered OTP in a second read. Both exact queries and positions are checked by one V2 append; the existing registration-ancestry and validated-by-OTP indexes support these reads.
 
 When adding an Orisun query or V2 consistency query, add an explicit `eventstore.EventTypeField` criterion and update this table with the matching index.
 

@@ -47,7 +47,7 @@ func authProfileHistory(t *testing.T) ([]eventstore.ResolvedEvent, authProfileKe
 	}
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	facts := []eventstore.DomainEvent{
-		must(auth.NewUserRegisteredEvent(user, "owned-profile", "owned@example.com", "Owned", "Profile", 1990, string(hash), key, nil)),
+		must(auth.NewUserRegisteredEvent(user, "owned-profile", "owned@example.com", "Owned", "Profile", 1990, string(hash), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil)),
 		must(profile.NewProfileImageUploadedEvent(uuidv7.NewString(), "/uploads/avatar.png", now, user, nil)),
 		must(profile.NewProfileBioUpdatedEvent(uuidv7.NewString(), "Owned bio", now, user, key, nil)),
 		must(profile.NewProfileHeaderImageUploadedEvent(uuidv7.NewString(), "/uploads/header.png", now, user, nil)),

@@ -36,7 +36,7 @@ func (q *Queries) AuthOccurrenceOwner(ctx context.Context, occurrenceKey string)
 const loadAuthProjection = `-- name: LoadAuthProjection :one
 SELECT u.id,u.user_registered_id,u.name,coalesce(u.username,'')::text AS username,u.email,
  coalesce(u.image,'')::text AS image,u.bio,u.header_image_url,
- u.email_verified,u.email_validated_id,u.email_validation_otp_id,u.email_validated_at,
+ u.email_verified,u.email_verified_at,
  u.last_event_commit_position,u.last_event_prepare_position,
  a.id AS credential_id,a.account_id,a.provider_id,a.user_id,coalesce(a.password,'')::text AS password
 FROM auth_user u LEFT JOIN auth_account a ON a.id=u.id||':credential'
@@ -53,9 +53,7 @@ type LoadAuthProjectionRow struct {
 	Bio                      string             `json:"bio"`
 	HeaderImageUrl           string             `json:"header_image_url"`
 	EmailVerified            bool               `json:"email_verified"`
-	EmailValidatedID         *string            `json:"email_validated_id"`
-	EmailValidationOtpID     *string            `json:"email_validation_otp_id"`
-	EmailValidatedAt         pgtype.Timestamptz `json:"email_validated_at"`
+	EmailVerifiedAt          pgtype.Timestamptz `json:"email_verified_at"`
 	LastEventCommitPosition  *int64             `json:"last_event_commit_position"`
 	LastEventPreparePosition *int64             `json:"last_event_prepare_position"`
 	CredentialID             *string            `json:"credential_id"`
@@ -78,9 +76,7 @@ func (q *Queries) LoadAuthProjection(ctx context.Context, id string) (LoadAuthPr
 		&i.Bio,
 		&i.HeaderImageUrl,
 		&i.EmailVerified,
-		&i.EmailValidatedID,
-		&i.EmailValidationOtpID,
-		&i.EmailValidatedAt,
+		&i.EmailVerifiedAt,
 		&i.LastEventCommitPosition,
 		&i.LastEventPreparePosition,
 		&i.CredentialID,
@@ -144,11 +140,11 @@ func (q *Queries) SaveAuthCredential(ctx context.Context, arg SaveAuthCredential
 
 const saveAuthProjection = `-- name: SaveAuthProjection :exec
 INSERT INTO auth_user(id,user_registered_id,name,username,display_username,email,email_verified,image,bio,header_image_url,
- email_validated_id,email_validation_otp_id,email_validated_at,event_positions,last_event_commit_position,last_event_prepare_position)
+ email_verified_at,event_positions,last_event_commit_position,last_event_prepare_position)
 VALUES($1,$1,$2,$3,$3,$4,$5,$6,$7,$8,
- $9,$10,$11,$12,$13,$14)
+ $9,$10,$11,$12)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name,email_verified=excluded.email_verified,image=excluded.image,bio=excluded.bio,header_image_url=excluded.header_image_url,
- email_validated_id=excluded.email_validated_id,email_validation_otp_id=excluded.email_validation_otp_id,email_validated_at=excluded.email_validated_at,
+ email_verified_at=excluded.email_verified_at,
  event_positions=auth_user.event_positions||excluded.event_positions,
  last_event_commit_position=excluded.last_event_commit_position,last_event_prepare_position=excluded.last_event_prepare_position
 `
@@ -162,9 +158,7 @@ type SaveAuthProjectionParams struct {
 	Image                    *string            `json:"image"`
 	Bio                      string             `json:"bio"`
 	HeaderImageUrl           string             `json:"header_image_url"`
-	EmailValidatedID         *string            `json:"email_validated_id"`
-	EmailValidationOtpID     *string            `json:"email_validation_otp_id"`
-	EmailValidatedAt         pgtype.Timestamptz `json:"email_validated_at"`
+	EmailVerifiedAt          pgtype.Timestamptz `json:"email_verified_at"`
 	EventPositions           []byte             `json:"event_positions"`
 	LastEventCommitPosition  *int64             `json:"last_event_commit_position"`
 	LastEventPreparePosition *int64             `json:"last_event_prepare_position"`
@@ -180,9 +174,7 @@ func (q *Queries) SaveAuthProjection(ctx context.Context, arg SaveAuthProjection
 		arg.Image,
 		arg.Bio,
 		arg.HeaderImageUrl,
-		arg.EmailValidatedID,
-		arg.EmailValidationOtpID,
-		arg.EmailValidatedAt,
+		arg.EmailVerifiedAt,
 		arg.EventPositions,
 		arg.LastEventCommitPosition,
 		arg.LastEventPreparePosition,

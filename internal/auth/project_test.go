@@ -21,13 +21,11 @@ func authProjectionHistory(t *testing.T) ([]eventstore.ResolvedEvent, *authTestK
 	}
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{id: key}}
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	otp, reset := uuidv7.NewString(), uuidv7.NewString()
+	reset := uuidv7.NewString()
 	hash := testAuthHash(t)
 	facts := []eventstore.DomainEvent{
-		mustAuthEvent(NewUserRegisteredEvent(id, "alice", "alice@example.com", "Alice", "Test", 1990, hash, key, nil)),
+		mustAuthEvent(NewUserRegisteredEvent(id, "alice", "alice@example.com", "Alice", "Test", 1990, hash, time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil)),
 		mustAuthEvent(NewUserNameChangedEvent(uuidv7.NewString(), "Alice Changed", at, id, key, nil)),
-		mustAuthEvent(NewEmailVerificationOTPGeneratedEvent(otp, "123456", at.Add(time.Hour), id, nil)),
-		mustAuthEvent(NewEmailVerificationOTPValidatedEvent(uuidv7.NewString(), at, otp, id, nil)),
 		mustAuthEvent(NewPasswordResetRequestedEvent(reset, "alice@example.com", "secret-token", at.Add(time.Hour), id, key, nil)),
 		mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), at, id, hash, nil)),
 		mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), at, reset, id, hash, nil)),
@@ -196,7 +194,7 @@ func TestAuthUnknownPositionIsExplicit(t *testing.T) {
 func TestAuthSubscriptionIncludesInjectedProfileTypes(t *testing.T) {
 	source := ProfileSource{EventTypes: []string{"ProfileImageUploaded", "ProfileBioUpdated", "ProfileHeaderImageUploaded"}}
 	query := authUserProjectionEventHandlerQuery(source)
-	if len(query.Criteria) != 10 {
+	if len(query.Criteria) != 8 {
 		t.Fatal("merged subscription missing event types")
 	}
 	for _, criterion := range query.Criteria {

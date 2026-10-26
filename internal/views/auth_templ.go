@@ -363,7 +363,7 @@ func ResetPasswordForm(token string, errors map[string]string) templ.Component {
 	})
 }
 
-func ValidateEmail(userID string, errors map[string]string) templ.Component {
+func ValidateEmail(registrationID string, errors map[string]string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -392,7 +392,7 @@ func ValidateEmail(userID string, errors map[string]string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = ValidateEmailForm(userID, errors).Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = ValidateEmailForm(registrationID, errors).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -406,7 +406,7 @@ func ValidateEmail(userID string, errors map[string]string) templ.Component {
 	})
 }
 
-func ValidateEmailForm(userID string, errors map[string]string) templ.Component {
+func ValidateEmailForm(registrationID string, errors map[string]string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -440,9 +440,9 @@ func ValidateEmailForm(userID string, errors map[string]string) templ.Component 
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var21 string
-			templ_7745c5c3_Var21, templ_7745c5c3_Err = templruntime.NewAttributeExpression(sendValidationOTPSSE(userID)).Resolve(ctx)
+			templ_7745c5c3_Var21, templ_7745c5c3_Err = templruntime.NewAttributeExpression(sendValidationOTPSSE(registrationID)).Resolve(ctx)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/views/auth.templ`, Line: 75, Col: 68}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/views/auth.templ`, Line: 75, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var21)
 			if templ_7745c5c3_Err != nil {
@@ -454,7 +454,7 @@ func ValidateEmailForm(userID string, errors map[string]string) templ.Component 
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = AuthForm("/register/"+userID+"/validate-email", "Validate email", []Field{
+		templ_7745c5c3_Err = AuthForm("/register/"+registrationID+"/validate-email", "Validate email", []Field{
 			{Name: "otp", Type: "text", Label: "Verification code"},
 		}, errors).Render(templ.WithChildren(ctx, templ_7745c5c3_Var20), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {

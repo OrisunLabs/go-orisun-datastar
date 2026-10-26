@@ -3,7 +3,10 @@ package profile
 import (
 	"context"
 	"errors"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
+	"golang.org/x/crypto/bcrypt"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -114,7 +117,11 @@ func profileFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, *profileT
 		t.Fatal(err)
 	}
 	keys := &profileTestKeys{key: key}
-	user, err := auth.RegisterUserCommandHandler(t.Context(), auth.RegisterUserCommand{Username: "profile-user", Email: "profile@example.com", Password: "secret123"}, store, store, keys)
+	hash, err := bcrypt.GenerateFromPassword([]byte("secret123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := auth.RegisterUserCommandHandler(t.Context(), auth.RegisterUserCommand{Username: "profile-user", Email: "profile@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: string(hash), EmailVerifiedAt: time.Unix(1, 0).UTC()}, store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}

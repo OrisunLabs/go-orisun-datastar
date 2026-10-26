@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -47,8 +48,8 @@ func profileProjectionHistory(t *testing.T) ([]eventstore.ResolvedEvent, profile
 		return projectionEvent(t, event, err)
 	}
 	facts := []eventstore.DomainEvent{
-		must(auth.NewUserRegisteredEvent(user, "alice", "alice@example.com", "Alice", "Test", 1990, string(hash), key, nil)),
-		must(auth.NewUserRegisteredEvent(other, "bobby", "bob@example.com", "Bob", "Test", 1990, string(hash), otherKey, nil)),
+		must(auth.NewUserRegisteredEvent(user, "alice", "alice@example.com", "Alice", "Test", 1990, string(hash), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil)),
+		must(auth.NewUserRegisteredEvent(other, "bobby", "bob@example.com", "Bob", "Test", 1990, string(hash), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), otherKey, nil)),
 		must(NewProfileBioUpdatedEvent(uuidv7.NewString(), "First bio", testProfileTime(), user, key, nil)),
 		must(auth.NewUserNameChangedEvent(uuidv7.NewString(), "Bob Changed", testProfileTime(), other, otherKey, nil)),
 		must(NewProfileImageUploadedEvent(uuidv7.NewString(), "/uploads/avatar.png", testProfileTime(), user, nil)),

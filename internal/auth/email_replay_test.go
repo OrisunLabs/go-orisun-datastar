@@ -27,15 +27,22 @@ func TestRecordedEmailReplayDoesNotNeedSubjectKey(t *testing.T) {
 		for _, scenario := range []string{"erased key", "unavailable key service", "unsent erased key", "malformed source", "malformed receipt"} {
 			t.Run(kind+"/"+scenario, func(t *testing.T) {
 				store, user, keys := emailCommandFixture(t)
+				subjectID := user.UserRegisteredID
+				if kind == "OTP" {
+					var registration StartUserRegistrationResult
+					store, registration, keys = pendingEmailFixture(t)
+					user.UserRegisteredID = registration.UserRegistrationStartedID
+					subjectID = registration.UserID
+				}
 				sender := &commandTestEmailSender{}
 				var invoke func(SubjectPiiKeyReader) error
 				sourceType, outcomeType := EmailVerificationOTPGenerated, EmailVerificationOTPSent
 				if kind == "OTP" {
-					generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{User: user}, store, store)
+					generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: user.UserRegisteredID}, store, store)
 					if err != nil {
 						t.Fatal(err)
 					}
-					command := SendEmailValidationOTPCommand{UserRegisteredID: user.UserRegisteredID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
+					command := SendEmailValidationOTPCommand{UserRegistrationStartedID: user.UserRegisteredID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
 					invoke = func(keys SubjectPiiKeyReader) error {
 						return SendEmailValidationOTPCommandHandler(t.Context(), command, store, store, sender, keys)
 					}
@@ -71,7 +78,7 @@ func TestRecordedEmailReplayDoesNotNeedSubjectKey(t *testing.T) {
 					}
 					before = len(resetOutcomeFacts(t, store, outcomeType))
 				}
-				if err := keys.DestroySubjectKey(t.Context(), user.UserRegisteredID); err != nil {
+				if err := keys.DestroySubjectKey(t.Context(), subjectID); err != nil {
 					t.Fatal(err)
 				}
 				replayKeys := &emailReplayKeys{SubjectPiiKeyReader: keys}
@@ -103,23 +110,23 @@ func TestRecordedEmailReplayDoesNotNeedSubjectKey(t *testing.T) {
 func TestOTPEmailRejectsDifferentUserBeforeSendingOrSkipping(t *testing.T) {
 	for _, alreadySent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unsent", true: "recorded"}[alreadySent], func(t *testing.T) {
-			store, user, keys := emailCommandFixture(t)
-			generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{User: user}, store, store)
+			store, registration, keys := pendingEmailFixture(t)
+			generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: registration.UserRegistrationStartedID}, store, store)
 			if err != nil {
 				t.Fatal(err)
 			}
-			command := SendEmailValidationOTPCommand{UserRegisteredID: user.UserRegisteredID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
+			command := SendEmailValidationOTPCommand{UserRegistrationStartedID: registration.UserRegistrationStartedID, EmailVerificationOTPGeneratedID: generated.EmailVerificationOTPGeneratedID}
 			sender := &commandTestEmailSender{}
 			if alreadySent {
 				if err := SendEmailValidationOTPCommandHandler(t.Context(), command, store, store, sender, keys); err != nil {
 					t.Fatal(err)
 				}
 			}
-			other, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "other-user", Email: "other@example.com", Password: "secret123"}, store, store, keys)
+			other, err := StartUserRegistrationCommandHandler(t.Context(), StartUserRegistrationCommand{Username: "other-user", Email: "other@example.com", Password: "secret123"}, store, store, keys)
 			if err != nil {
 				t.Fatal(err)
 			}
-			command.UserRegisteredID = other.UserRegisteredID
+			command.UserRegistrationStartedID = other.UserRegistrationStartedID
 			before, sent := len(resetOutcomeFacts(t, store, EmailVerificationOTPSent)), len(sender.messages)
 			reader := &emailReplayKeys{SubjectPiiKeyReader: keys}
 			if err := SendEmailValidationOTPCommandHandler(t.Context(), command, store, store, sender, reader); err == nil {

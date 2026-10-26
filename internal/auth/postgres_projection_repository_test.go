@@ -11,6 +11,7 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -95,7 +96,7 @@ func authSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 func TestPostgresAuthBatchPartitionsAndReplay(t *testing.T) {
 	events, keys := authProjectionHistory(t)
 	baseline := ""
-	for _, parts := range [][]int{{7}, {1, 1, 1, 1, 1, 1, 1}, {2, 3, 2}} {
+	for _, parts := range [][]int{{5}, {1, 1, 1, 1, 1}, {2, 1, 2}} {
 		repo, pool := nativeAuthProjection(t)
 		offset := 0
 		for _, size := range parts {
@@ -197,8 +198,12 @@ func TestPostgresAuthMissingRegistrationAndTokenConflict(t *testing.T) {
 	before := authSnapshot(t, pool)
 	conflict := events[2]
 	conflict.Position = eventstore.Position{Commit: 11, Prepare: 0}
-	conflict.Event.Data = eventstore.MustData(conflict.Event.Data)
-	conflict.Event.Data["otpCode"] = "654321"
+	original, err := DecodePasswordResetRequestedEvent(conflict.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires, _ := time.Parse(time.RFC3339Nano, original.ExpiresAt)
+	conflict.Event = mustAuthEvent(NewPasswordResetRequestedEvent(original.PasswordResetRequestedID, "alice@example.com", "different-token", expires, original.Scopes.UserRegisteredID, keys.keys[original.Scopes.UserRegisteredID], nil))
 	if err := ProjectBatch(t.Context(), []eventstore.ResolvedEvent{conflict}, repo, keys, ProfileSource{}, nil); !errors.Is(err, eventstore.ErrConflict) {
 		t.Fatalf("token collision: %v", err)
 	}
@@ -248,17 +253,20 @@ func TestPostgresAuthOwnWritesAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A pre-migration verified flag has no complete source fact; retain it.
-	if _, err := pool.Exec(t.Context(), "UPDATE auth_user SET email_verified=true"); err != nil {
+	// Later domain changes retain the accepted verification fact.
+	var before time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT email_verified_at FROM auth_user").Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	if err := ProjectBatch(t.Context(), events[1:2], repo, keys, ProfileSource{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	var verified bool
-	if err := pool.QueryRow(t.Context(), "SELECT email_verified FROM auth_user").Scan(&verified); err != nil || !verified {
-		t.Fatalf("legacy verified flag lost: %v", err)
+	var after time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT email_verified,email_verified_at FROM auth_user").Scan(&verified, &after); err != nil || !verified || !after.Equal(before) {
+		t.Fatalf("accepted verification changed: %v", err)
 	}
+
 }
 
 func TestPostgresAuthDecryptionFailureRollsBackPrefix(t *testing.T) {
@@ -312,5 +320,41 @@ func TestPostgresAuthUnknownPositionsAndConstraints(t *testing.T) {
 		if _, err := pool.Exec(t.Context(), "UPDATE "+columns.table+" SET ("+columns.commit+","+columns.prepare+")=(0,0)"); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestPostgresRegistrationProjectsOnlyAcceptedUser(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	store := eventstoretest.New(t)
+	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
+	pending := stagedRegistration(t, store, keys)
+	verifyStagedRegistration(t, store, pending)
+	for _, kind := range []string{UserRegistrationStarted, EmailVerificationOTPGenerated, EmailVerificationOTPValidated} {
+		if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, kind), repo, keys, ProfileSource{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var users, accounts int
+	if err := pool.QueryRow(t.Context(), "SELECT (SELECT count(*) FROM auth_user),(SELECT count(*) FROM auth_account)").Scan(&users, &accounts); err != nil || users != 0 || accounts != 0 {
+		t.Fatal("pending workflow created login state")
+	}
+	sessions := NewSessionManager(pool, NewAuthUserStore(pool), false)
+	if _, _, err := sessions.Login(t.Context(), "staged@example.com", "secret123"); err == nil {
+		t.Fatal("pending registration could log in")
+	}
+	if err := FinalizeUserRegistration(t.Context(), pending.UserRegistrationStartedID, nil, store, store, keys); err != nil {
+		t.Fatal(err)
+	}
+	accepted := resetOutcomeFacts(t, store, UserRegistered)
+	// No workflow history is delivered to this fresh domain projection.
+	if err := ProjectBatch(t.Context(), accepted, repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	user, token, err := sessions.Login(t.Context(), "staged@example.com", "secret123")
+	if err != nil || token == "" || !user.EmailVerified || user.UserRegisteredID != pending.UserID {
+		t.Fatalf("accepted user could not log in: %+v %v", user, err)
+	}
+	if err := ProjectBatch(t.Context(), accepted, repo, nil, ProfileSource{}, nil); err != nil {
+		t.Fatalf("accepted replay required workflow or decryption: %v", err)
 	}
 }

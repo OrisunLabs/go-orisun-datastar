@@ -89,7 +89,7 @@ func ProjectBatch(ctx context.Context, events []eventstore.ResolvedEvent, reposi
 }
 func authProjectionType(kind string, source ProfileSource) bool {
 	switch kind {
-	case UserRegistered, UserNameChanged, EmailVerificationOTPGenerated, EmailVerificationOTPValidated, PasswordResetRequested, PasswordResetCompleted, PasswordChanged:
+	case UserRegistered, UserNameChanged, PasswordResetRequested, PasswordResetCompleted, PasswordChanged:
 		return true
 	}
 	return slices.Contains(source.EventTypes, kind)
@@ -140,7 +140,8 @@ func decodeAuthChange(ctx context.Context, resolved eventstore.ResolvedEvent, ke
 		if name == "" {
 			name = username
 		}
-		return RegistrationInput{v.UserRegisteredID, name, username, email, v.PasswordHash}, nil
+		verifiedAt, _ := time.Parse(time.RFC3339Nano, v.EmailVerifiedAt)
+		return RegistrationInput{UserID: v.UserRegisteredID, Name: name, Username: username, Email: email, PasswordHash: v.PasswordHash, EmailVerifiedAt: verifiedAt}, nil
 	case UserNameChanged:
 		v, err := DecodeUserNameChangedEvent(e)
 		if err != nil {
@@ -163,20 +164,6 @@ func decodeAuthChange(ctx context.Context, resolved eventstore.ResolvedEvent, ke
 			return nil, err
 		}
 		return PasswordInput{v.Scopes.UserRegisteredID, v.PasswordHash}, nil
-	case EmailVerificationOTPGenerated:
-		v, err := DecodeEmailVerificationOTPGeneratedEvent(e)
-		if err != nil {
-			return nil, err
-		}
-		at, _ := time.Parse(time.RFC3339Nano, v.ExpiresAt)
-		return VerificationFact{v.EmailVerificationOTPGeneratedID, v.Scopes.UserRegisteredID, "email", verificationValueHash("email-verification-otp", v.OTPCode), at}, nil
-	case EmailVerificationOTPValidated:
-		v, err := DecodeEmailVerificationOTPValidatedEvent(e)
-		if err != nil {
-			return nil, err
-		}
-		at, _ := time.Parse(time.RFC3339Nano, v.ValidatedAt)
-		return ValidationInput{v.Scopes.UserRegisteredID, EmailValidationFact{v.EmailVerificationOTPValidatedID, v.Scopes.EmailVerificationOTPGeneratedID, at}}, nil
 	case PasswordResetRequested:
 		v, err := DecodePasswordResetRequestedEvent(e)
 		if err != nil {
@@ -201,7 +188,7 @@ func decodeAuthChange(ctx context.Context, resolved eventstore.ResolvedEvent, ke
 func applyAuthChange(state *AuthState, change AuthChange, pos eventstore.Position) (AuthState, error) {
 	if root, ok := change.(RegistrationInput); ok {
 		if state == nil {
-			return AuthState{UserID: root.UserID, Name: root.Name, Username: root.Username, Email: root.Email, PasswordHash: root.PasswordHash, Position: &pos}, nil
+			return AuthState{UserID: root.UserID, Name: root.Name, Username: root.Username, Email: root.Email, PasswordHash: root.PasswordHash, EmailVerified: true, Verification: &EmailValidationFact{At: root.EmailVerifiedAt}, Position: &pos}, nil
 		}
 		if state.UserID != root.UserID || state.Email != root.Email || state.Username != root.Username {
 			return AuthState{}, eventstore.ErrConflict
@@ -221,9 +208,6 @@ func applyAuthChange(state *AuthState, change AuthChange, pos eventstore.Positio
 		}
 	case PasswordInput:
 		next.PasswordHash = c.PasswordHash
-	case ValidationInput:
-		next.Verification = &c.Fact
-		next.EmailVerified = true
 	case VerificationFact:
 	case ImageInput:
 		next.Image = c.URL

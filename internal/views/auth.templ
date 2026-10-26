@@ -62,17 +62,17 @@ templ ResetPasswordForm(token string, errors map[string]string) {
 	}
 }
 
-templ ValidateEmail(userID string, errors map[string]string) {
+templ ValidateEmail(registrationID string, errors map[string]string) {
 	@Base("Validate email") {
-		@ValidateEmailForm(userID, errors)
+		@ValidateEmailForm(registrationID, errors)
 	}
 }
 
-templ ValidateEmailForm(userID string, errors map[string]string) {
-	@AuthForm("/register/" + userID + "/validate-email", "Validate email", []Field{
+templ ValidateEmailForm(registrationID string, errors map[string]string) {
+	@AuthForm("/register/" + registrationID + "/validate-email", "Validate email", []Field{
 		{Name: "otp", Type: "text", Label: "Verification code"},
 	}, errors) {
-		<form class="w-full" data-on:submit={ sendValidationOTPSSE(userID) }>
+		<form class="w-full" data-on:submit={ sendValidationOTPSSE(registrationID) }>
 			<button class="btn btn-outline w-full" type="submit">Send new code</button>
 		</form>
 	}

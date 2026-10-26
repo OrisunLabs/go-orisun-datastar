@@ -11,13 +11,12 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 func TestValidateOTPStoresBothIndependentObservations(t *testing.T) {
 	store, user, otp := otpStore(t)
 	reader := &otpObservationReader{EmbeddedOrisun: store}
-	err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{User: views.User{UserRegisteredID: user}, Code: "123456"}, store, reader)
+	err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: user, Code: "123456"}, store, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +47,7 @@ func TestValidateOTPRejectsConcurrentReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 	}}
-	err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{User: views.User{UserRegisteredID: user}, Code: "123456"}, store, reader)
+	err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: user, Code: "123456"}, store, reader)
 	if !errors.Is(err, eventstore.ErrConflict) {
 		t.Fatalf("got %v, want consistency conflict", err)
 	}
@@ -58,7 +57,7 @@ func otpStore(t *testing.T) (*eventstore.EmbeddedOrisun, string, string) {
 	t.Helper()
 	user, otp := uuidv7.NewString(), uuidv7.NewString()
 	store := eventstoretest.New(t,
-		registeredAuthEvent(t, user),
+		registrationStartedAuthEvent(t, user),
 		mustAuthEvent(NewEmailVerificationOTPGeneratedEvent(otp, "123456", time.Now().Add(time.Hour), user, nil)),
 	)
 	return store, user, otp

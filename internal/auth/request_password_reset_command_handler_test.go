@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
@@ -14,7 +16,7 @@ import (
 func TestPasswordResetProjectsDecryptedTokenAndRejectsTampering(t *testing.T) {
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
 	store := eventstoretest.New(t)
-	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "reset-user", Email: "reset@example.com", Password: "secret123", FirstName: "", LastName: ""}, store, store, keys)
+	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "reset-user", Email: "reset@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: testAuthHash(t), EmailVerifiedAt: time.Unix(1, 0).UTC(), FirstName: "", LastName: ""}, store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}

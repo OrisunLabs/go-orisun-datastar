@@ -82,16 +82,21 @@ const (
 	LoginAttemptUserRegisteredIDField         = "user.userRegisteredId"
 )
 
+type RegistrationDetails struct {
+	Username     protectedpii.Value `json:"username"`
+	UsernameHash string             `json:"usernameHash"`
+	Email        protectedpii.Value `json:"email"`
+	EmailHash    string             `json:"emailHash"`
+	FirstName    protectedpii.Value `json:"firstName"`
+	LastName     protectedpii.Value `json:"lastName"`
+	YearOfBirth  int                `json:"yearOfBirth"`
+	PasswordHash string             `json:"passwordHash"`
+}
 type UserRegisteredEvent struct {
-	UserRegisteredID string             `json:"userRegisteredId"`
-	Username         protectedpii.Value `json:"username"`
-	UsernameHash     string             `json:"usernameHash"`
-	Email            protectedpii.Value `json:"email"`
-	EmailHash        string             `json:"emailHash"`
-	FirstName        protectedpii.Value `json:"firstName"`
-	LastName         protectedpii.Value `json:"lastName"`
-	YearOfBirth      int                `json:"yearOfBirth"`
-	PasswordHash     string             `json:"passwordHash"`
+	UserRegisteredID string `json:"userRegisteredId"`
+	RegisteredAt     string `json:"registeredAt"`
+	EmailVerifiedAt  string `json:"emailVerifiedAt"`
+	RegistrationDetails
 }
 
 type UserNameChangedEvent struct {
@@ -103,10 +108,10 @@ type UserNameChangedEvent struct {
 }
 
 type EmailVerificationOTPGeneratedEvent struct {
-	EmailVerificationOTPGeneratedID string              `json:"emailVerificationOTPGeneratedId"`
-	OTPCode                         string              `json:"otpCode"`
-	ExpiresAt                       string              `json:"expiresAt"`
-	Scopes                          UserRegisteredScope `json:"scopes"`
+	EmailVerificationOTPGeneratedID string                       `json:"emailVerificationOTPGeneratedId"`
+	OTPCode                         string                       `json:"otpCode"`
+	ExpiresAt                       string                       `json:"expiresAt"`
+	Scopes                          UserRegistrationStartedScope `json:"scopes"`
 }
 
 type EmailVerificationOTPValidatedEvent struct {
@@ -199,7 +204,7 @@ type EmailVerificationOTPGeneratedScope struct {
 
 type EmailVerificationOTPValidatedScope struct {
 	EmailVerificationOTPGeneratedID string `json:"emailVerificationOTPGeneratedId"`
-	UserRegisteredID                string `json:"userRegisteredId"`
+	UserRegistrationStartedID       string `json:"userRegistrationStartedId"`
 }
 
 type PasswordResetRequestedScope struct {
@@ -216,48 +221,37 @@ type AccountDeletionScope struct {
 	UserRegisteredID           string `json:"userRegisteredId"`
 }
 
-func NewUserRegisteredEvent(userRegisteredID, username, emailAddress, firstName, lastName string, yearOfBirth int, passwordHash string, subjectKey protectedpii.SubjectDataKey, metadata map[string]any) (eventstore.DomainEvent, error) {
+func protectRegistrationDetails(username, emailAddress, firstName, lastName string, yearOfBirth int, passwordHash string, subjectKey protectedpii.SubjectDataKey) (RegistrationDetails, error) {
 	if len(strings.TrimSpace(username)) < 4 || username != strings.TrimSpace(username) || emailAddress == "" || emailAddress != strings.ToLower(strings.TrimSpace(emailAddress)) || firstName != strings.TrimSpace(firstName) || lastName != strings.TrimSpace(lastName) {
-		return eventstore.DomainEvent{}, eventstore.ErrInvalidEvent
+		return RegistrationDetails{}, eventstore.ErrInvalidEvent
 	}
 	protector := protectedpii.FromEnv()
 	protected0, err := protector.ProtectWithDataKey(username, UserRegisteredUsernameField, subjectKey)
 	if err != nil {
-		return eventstore.DomainEvent{}, err
+		return RegistrationDetails{}, err
 	}
 	protected1, err := protector.ProtectWithDataKey(emailAddress, UserRegisteredEmailField, subjectKey)
 	if err != nil {
-		return eventstore.DomainEvent{}, err
+		return RegistrationDetails{}, err
 	}
 	protected2, err := protector.ProtectWithDataKey(firstName, UserRegisteredFirstNameField, subjectKey)
 	if err != nil {
-		return eventstore.DomainEvent{}, err
+		return RegistrationDetails{}, err
 	}
 	protected3, err := protector.ProtectWithDataKey(lastName, UserRegisteredLastNameField, subjectKey)
 	if err != nil {
-		return eventstore.DomainEvent{}, err
+		return RegistrationDetails{}, err
 	}
-	event := eventstore.DomainEvent{
-		EventID:   userRegisteredID,
-		EventType: UserRegistered,
-		Data: eventstore.MustData(UserRegisteredEvent{
-			UserRegisteredID: userRegisteredID,
-			Username:         protected0,
-			UsernameHash:     protector.BlindIndex(UserRegisteredUsernameField, username),
-			Email:            protected1,
-			EmailHash:        protector.BlindIndex(UserRegisteredEmailField, emailAddress),
-			FirstName:        protected2,
-			LastName:         protected3,
-			YearOfBirth:      yearOfBirth,
-			PasswordHash:     passwordHash,
-		}),
-		Metadata: metadata,
-	}
-	_, err = DecodeUserRegisteredEvent(event)
+	return RegistrationDetails{Username: protected0, UsernameHash: protector.BlindIndex(UserRegisteredUsernameField, username), Email: protected1, EmailHash: protector.BlindIndex(UserRegisteredEmailField, emailAddress), FirstName: protected2, LastName: protected3, YearOfBirth: yearOfBirth, PasswordHash: passwordHash}, nil
+}
+func NewUserRegisteredEvent(userRegisteredID, username, emailAddress, firstName, lastName string, yearOfBirth int, passwordHash string, registeredAt, emailVerifiedAt time.Time, subjectKey protectedpii.SubjectDataKey, metadata map[string]any) (eventstore.DomainEvent, error) {
+	details, err := protectRegistrationDetails(username, emailAddress, firstName, lastName, yearOfBirth, passwordHash, subjectKey)
 	if err != nil {
 		return eventstore.DomainEvent{}, err
 	}
-	return event, nil
+	event := eventstore.DomainEvent{EventID: userRegisteredID, EventType: UserRegistered, Data: eventstore.MustData(UserRegisteredEvent{UserRegisteredID: userRegisteredID, RegisteredAt: formatEventTime(registeredAt), EmailVerifiedAt: formatEventTime(emailVerifiedAt), RegistrationDetails: details}), Metadata: metadata}
+	_, err = DecodeUserRegisteredEvent(event)
+	return event, err
 }
 
 func NewUserNameChangedEvent(userNameChangedID, name string, changedAt time.Time, userRegisteredID string, subjectKey protectedpii.SubjectDataKey, metadata map[string]any) (eventstore.DomainEvent, error) {
@@ -288,7 +282,7 @@ func NewUserNameChangedEvent(userNameChangedID, name string, changedAt time.Time
 	return event, nil
 }
 
-func NewEmailVerificationOTPGeneratedEvent(emailVerificationOTPGeneratedID, otpCode string, expiresAt time.Time, userRegisteredID string, metadata map[string]any) (eventstore.DomainEvent, error) {
+func NewEmailVerificationOTPGeneratedEvent(emailVerificationOTPGeneratedID, otpCode string, expiresAt time.Time, userRegistrationStartedID string, metadata map[string]any) (eventstore.DomainEvent, error) {
 	event := eventstore.DomainEvent{
 		EventID:   emailVerificationOTPGeneratedID,
 		EventType: EmailVerificationOTPGenerated,
@@ -296,7 +290,7 @@ func NewEmailVerificationOTPGeneratedEvent(emailVerificationOTPGeneratedID, otpC
 			EmailVerificationOTPGeneratedID: emailVerificationOTPGeneratedID,
 			OTPCode:                         otpCode,
 			ExpiresAt:                       formatEventTime(expiresAt),
-			Scopes:                          UserRegisteredScope{UserRegisteredID: userRegisteredID},
+			Scopes:                          UserRegistrationStartedScope{UserRegistrationStartedID: userRegistrationStartedID},
 		}),
 		Metadata: metadata,
 	}
@@ -307,7 +301,7 @@ func NewEmailVerificationOTPGeneratedEvent(emailVerificationOTPGeneratedID, otpC
 	return event, nil
 }
 
-func NewEmailVerificationOTPValidatedEvent(emailVerificationOTPValidatedID string, validatedAt time.Time, emailVerificationOTPGeneratedID, userRegisteredID string, metadata map[string]any) (eventstore.DomainEvent, error) {
+func NewEmailVerificationOTPValidatedEvent(emailVerificationOTPValidatedID string, validatedAt time.Time, emailVerificationOTPGeneratedID, userRegistrationStartedID string, metadata map[string]any) (eventstore.DomainEvent, error) {
 	event := eventstore.DomainEvent{
 		EventID:   emailVerificationOTPValidatedID,
 		EventType: EmailVerificationOTPValidated,
@@ -316,7 +310,7 @@ func NewEmailVerificationOTPValidatedEvent(emailVerificationOTPValidatedID strin
 			ValidatedAt:                     formatEventTime(validatedAt),
 			Scopes: EmailVerificationOTPValidatedScope{
 				EmailVerificationOTPGeneratedID: emailVerificationOTPGeneratedID,
-				UserRegisteredID:                userRegisteredID,
+				UserRegistrationStartedID:       userRegistrationStartedID,
 			},
 		}),
 		Metadata: metadata,
@@ -520,6 +514,15 @@ func formatEventTime(value time.Time) string {
 // It is safe to use after subject-key erasure and before any consumer effects.
 func ValidateEvent(event eventstore.DomainEvent) error {
 	switch event.EventType {
+	case UserRegistrationStarted:
+		_, err := DecodeUserRegistrationStartedEvent(event)
+		return err
+	case UserRegistrationCompleted:
+		_, err := DecodeUserRegistrationCompletedEvent(event)
+		return err
+	case UserRegistrationFailed:
+		_, err := DecodeUserRegistrationFailedEvent(event)
+		return err
 	case UserRegistered:
 		_, err := DecodeUserRegisteredEvent(event)
 		return err
@@ -569,7 +572,15 @@ func DecodeUserRegisteredEvent(event eventstore.DomainEvent) (UserRegisteredEven
 	if value.UsernameHash != value.Username.BlindIndex || value.EmailHash != value.Email.BlindIndex {
 		return value, eventstore.ErrInvalidEvent
 	}
-	return value, validateAuthValue(reflect.ValueOf(value), "")
+	if err := validateAuthValue(reflect.ValueOf(value), ""); err != nil {
+		return value, err
+	}
+	registered, _ := time.Parse(time.RFC3339Nano, value.RegisteredAt)
+	verified, _ := time.Parse(time.RFC3339Nano, value.EmailVerifiedAt)
+	if registered.Before(verified) {
+		return value, eventstore.ErrInvalidEvent
+	}
+	return value, nil
 }
 
 func DecodeUserNameChangedEvent(event eventstore.DomainEvent) (UserNameChangedEvent, error) {

@@ -51,9 +51,7 @@ type AuthUser struct {
 	BanReason                *string            `json:"ban_reason"`
 	BanExpires               pgtype.Timestamptz `json:"ban_expires"`
 	UserRegisteredID         string             `json:"user_registered_id"`
-	EmailValidatedID         *string            `json:"email_validated_id"`
-	EmailValidationOtpID     *string            `json:"email_validation_otp_id"`
-	EmailValidatedAt         pgtype.Timestamptz `json:"email_validated_at"`
+	EmailVerifiedAt          pgtype.Timestamptz `json:"email_verified_at"`
 	LastEventCommitPosition  *int64             `json:"last_event_commit_position"`
 	LastEventPreparePosition *int64             `json:"last_event_prepare_position"`
 	EventPositions           []byte             `json:"event_positions"`

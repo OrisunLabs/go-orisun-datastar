@@ -119,7 +119,7 @@ func TestRequestPasswordResetRequiresRegistration(t *testing.T) {
 			user := views.User{ID: owner, UserRegisteredID: owner, Email: "reset@example.com"}
 			var facts []eventstore.DomainEvent
 			if scenario == "registered" {
-				facts = append(facts, mustAuthEvent(NewUserRegisteredEvent(owner, "reset-user", user.Email, "Reset", "User", 1990, testAuthHash(t), key, nil)))
+				facts = append(facts, mustAuthEvent(NewUserRegisteredEvent(owner, "reset-user", user.Email, "Reset", "User", 1990, testAuthHash(t), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil)))
 			}
 			users := resetCandidateUser{user: user}
 			if scenario == "unknown user" || scenario == "lookup failure" {

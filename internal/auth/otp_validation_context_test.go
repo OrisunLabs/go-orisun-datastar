@@ -8,7 +8,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 func TestOTPValidationBindsUserAndGeneration(t *testing.T) {
@@ -21,7 +20,7 @@ func TestOTPValidationBindsUserAndGeneration(t *testing.T) {
 			}
 			facts := []eventstore.DomainEvent{}
 			if scenario != "missing registration" {
-				facts = append(facts, registeredAuthEvent(t, owner))
+				facts = append(facts, registrationStartedAuthEvent(t, owner))
 			}
 			if scenario == "previous OTP validated" {
 				previous := uuidv7.NewString()
@@ -48,8 +47,8 @@ func TestOTPValidationBindsUserAndGeneration(t *testing.T) {
 			if scenario == "incorrect code" {
 				code = "000000"
 			}
-			err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{User: views.User{UserRegisteredID: owner}, Code: code}, store, store)
-			accepted := scenario == "valid" || scenario == "previous OTP validated"
+			err := ValidateEmailVerificationOTPCommandHandler(t.Context(), ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: owner, Code: code}, store, store)
+			accepted := scenario == "valid" || scenario == "previous OTP validated" || scenario == "already validated"
 			if accepted && err != nil {
 				t.Fatal(err)
 			}
@@ -61,7 +60,7 @@ func TestOTPValidationBindsUserAndGeneration(t *testing.T) {
 			}
 			after := resetOutcomeFacts(t, store, EmailVerificationOTPValidated)
 			expected := before
-			if accepted {
+			if accepted && scenario != "already validated" {
 				expected++
 			}
 			if len(after) != expected {
@@ -72,7 +71,7 @@ func TestOTPValidationBindsUserAndGeneration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if value.Scopes.UserRegisteredID != owner || value.Scopes.EmailVerificationOTPGeneratedID != otp {
+				if value.Scopes.UserRegistrationStartedID != owner || value.Scopes.EmailVerificationOTPGeneratedID != otp {
 					t.Fatal("validation did not reference the selected owner's latest OTP")
 				}
 			}

@@ -39,15 +39,17 @@ type AuthState struct {
 	Position                                                             *eventstore.Position
 }
 type EmailValidationFact struct {
-	ID, OTPID string
-	At        time.Time
+	At time.Time
 }
 type VerificationFact struct {
 	ID, UserID, Purpose, ValueHash string
 	ExpiresAt                      time.Time
 }
 type AuthChange interface{ AuthUserID() string }
-type RegistrationInput struct{ UserID, Name, Username, Email, PasswordHash string }
+type RegistrationInput struct {
+	UserID, Name, Username, Email, PasswordHash string
+	EmailVerifiedAt                             time.Time
+}
 
 func (c RegistrationInput) AuthUserID() string { return c.UserID }
 
@@ -59,12 +61,6 @@ type PasswordInput struct{ UserID, PasswordHash string }
 
 func (c PasswordInput) AuthUserID() string { return c.UserID }
 
-type ValidationInput struct {
-	UserID string
-	Fact   EmailValidationFact
-}
-
-func (c ValidationInput) AuthUserID() string  { return c.UserID }
 func (c VerificationFact) AuthUserID() string { return c.UserID }
 
 type ImageInput struct{ UserID, URL string }

@@ -95,8 +95,8 @@ func (r *PostgreSQLProjectionRepository) Load(ctx context.Context, id string) (*
 	if err != nil {
 		return nil, err
 	}
-	if v.EmailValidatedID != nil {
-		s.Verification = &EmailValidationFact{*v.EmailValidatedID, *v.EmailValidationOtpID, v.EmailValidatedAt.Time.UTC()}
+	if v.EmailVerifiedAt.Valid {
+		s.Verification = &EmailValidationFact{At: v.EmailVerifiedAt.Time.UTC()}
 	}
 	return s, nil
 }
@@ -137,9 +137,7 @@ func (r *PostgreSQLProjectionRepository) Save(ctx context.Context, update Projec
 	}
 	input := dbsql.SaveAuthProjectionParams{ID: s.UserID, Name: s.Name, Username: stringPtr(s.Username), Email: s.Email, Image: stringPtr(s.Image), Bio: s.Bio, HeaderImageUrl: s.HeaderImage, EmailVerified: s.EmailVerified, EventPositions: evidence, LastEventCommitPosition: &s.Position.Commit, LastEventPreparePosition: &s.Position.Prepare}
 	if s.Verification != nil {
-		input.EmailValidatedID = &s.Verification.ID
-		input.EmailValidationOtpID = &s.Verification.OTPID
-		input.EmailValidatedAt = pgtype.Timestamptz{Time: s.Verification.At, Valid: true}
+		input.EmailVerifiedAt = pgtype.Timestamptz{Time: s.Verification.At, Valid: true}
 	}
 	if err := q.SaveAuthProjection(ctx, input); err != nil {
 		return err

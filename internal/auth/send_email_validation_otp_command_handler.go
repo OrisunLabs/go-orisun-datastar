@@ -14,7 +14,7 @@ import (
 )
 
 type SendEmailValidationOTPCommand struct {
-	UserRegisteredID                string
+	UserRegistrationStartedID       string
 	EmailVerificationOTPGeneratedID string
 	Metadata                        CommandMetadata
 }
@@ -41,7 +41,7 @@ func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmail
 		return errors.New("email verification OTP generation event not found")
 	}
 	if model.email == "" {
-		return errors.New("registered user event not found")
+		return errors.New("registration start event not found")
 	}
 
 	if err := sender.Send(ctx, email.Message{
@@ -83,16 +83,16 @@ func sendEmailValidationOTPEmailVerificationOTPSentQuery(otpID string) eventstor
 	}}}}
 }
 
-func sendEmailValidationOTPUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+func sendEmailValidationOTPUserRegistrationStartedQuery(userRegisteredID string) eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: UserRegistered},
-		{Key: UserRegisteredIDField, Value: userRegisteredID},
+		{Key: eventstore.EventTypeField, Value: UserRegistrationStarted},
+		{Key: UserRegistrationStartedIDField, Value: userRegisteredID},
 	}}}}
 }
 
 func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailValidationOTPCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyReader) (*sendEmailValidationOTPContext, error) {
 	generatedQuery := sendEmailValidationOTPEmailVerificationOTPGeneratedQuery(command.EmailVerificationOTPGeneratedID)
-	userQuery := sendEmailValidationOTPUserRegisteredQuery(command.UserRegisteredID)
+	userQuery := sendEmailValidationOTPUserRegistrationStartedQuery(command.UserRegistrationStartedID)
 	sentQuery := sendEmailValidationOTPEmailVerificationOTPSentQuery(command.EmailVerificationOTPGeneratedID)
 	query := sendEmailValidationOTPCombineQueries(generatedQuery, userQuery, sentQuery)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
@@ -101,16 +101,16 @@ func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailVal
 	}
 
 	model := &sendEmailValidationOTPContext{position: latest.ContextPosition, query: query}
-	var registered *UserRegisteredEvent
+	var registered *UserRegistrationStartedEvent
 	for _, resolved := range eventstore.EventsFromLatest(latest.Results) {
 		switch resolved.Event.EventType {
-		case UserRegistered:
-			value, err := DecodeUserRegisteredEvent(resolved.Event)
+		case UserRegistrationStarted:
+			value, err := DecodeUserRegistrationStartedEvent(resolved.Event)
 			if err != nil {
 				return nil, err
 			}
-			if value.UserRegisteredID != command.UserRegisteredID {
-				return nil, errors.New("registered user does not match OTP email context")
+			if value.UserRegistrationStartedID != command.UserRegistrationStartedID {
+				return nil, errors.New("registration start does not match OTP email context")
 			}
 			registered = &value
 		case EmailVerificationOTPGenerated:
@@ -118,8 +118,8 @@ func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailVal
 			if err != nil {
 				return nil, err
 			}
-			if value.EmailVerificationOTPGeneratedID != command.EmailVerificationOTPGeneratedID || value.Scopes.UserRegisteredID != command.UserRegisteredID {
-				return nil, errors.New("email verification OTP does not belong to registered user")
+			if value.EmailVerificationOTPGeneratedID != command.EmailVerificationOTPGeneratedID || value.Scopes.UserRegistrationStartedID != command.UserRegistrationStartedID {
+				return nil, errors.New("email verification OTP does not belong to registration")
 			}
 			model.otpID = value.EmailVerificationOTPGeneratedID
 			model.code = value.OTPCode
@@ -145,7 +145,7 @@ func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailVal
 	if model.otpID == "" || registered == nil {
 		return model, nil
 	}
-	key, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
+	key, ok, err := keys.GetSubjectDataKey(ctx, registered.UserID)
 	if err != nil {
 		return nil, err
 	}
