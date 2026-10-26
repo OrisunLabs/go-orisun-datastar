@@ -14,10 +14,10 @@ type EmailValidationOTPToBeSentEventHandler struct {
 	retriever eventstore.Retriever
 	saver     eventstore.SaverV2
 	sender    EmailSender
-	keys      SubjectPiiKeyPort
+	keys      SubjectPiiKeyReader
 }
 
-func NewEmailValidationOTPToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, keys SubjectPiiKeyPort, logger *slog.Logger) (*EmailValidationOTPToBeSentEventHandler, error) {
+func NewEmailValidationOTPToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, keys SubjectPiiKeyReader, logger *slog.Logger) (*EmailValidationOTPToBeSentEventHandler, error) {
 	handler := &EmailValidationOTPToBeSentEventHandler{retriever: retriever, saver: saver, sender: sender, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,

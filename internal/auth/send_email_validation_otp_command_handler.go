@@ -20,18 +20,13 @@ type SendEmailValidationOTPCommand struct {
 }
 
 type sendEmailValidationOTPContext struct {
-	otpID       string
-	code        string
-	expiresAt   string
-	email       string
-	subjectKey  protectedpii.SubjectDataKey
-	alreadySent bool
-	position    eventstore.Position
-	events      []eventstore.ResolvedEvent
-	query       eventstore.Query
+	otpID, code, email string
+	alreadySent        bool
+	position           eventstore.Position
+	query              eventstore.Query
 }
 
-func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmailValidationOTPCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, sender EmailSender, keys SubjectPiiKeyPort) error {
+func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmailValidationOTPCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, sender EmailSender, keys SubjectPiiKeyReader) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
@@ -66,24 +61,6 @@ func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmail
 	return err
 }
 
-func (m *sendEmailValidationOTPContext) handle(resolved eventstore.ResolvedEvent) error {
-	switch resolved.Event.EventType {
-	case EmailVerificationOTPGenerated:
-		m.otpID, _ = resolved.Event.Data[EmailVerificationOTPGeneratedIDField].(string)
-		m.code, _ = resolved.Event.Data[EmailVerificationOTPCodeField].(string)
-		m.expiresAt, _ = resolved.Event.Data[EmailVerificationOTPExpiresAtField].(string)
-	case UserRegistered:
-		decryptedemail, err := protectedpii.DecryptEventStringWithDataKey(protectedpii.FromEnv(), m.subjectKey, resolved.Event.Data, UserRegisteredEmailField)
-		if err != nil {
-			return err
-		}
-		m.email = decryptedemail
-	case EmailVerificationOTPSent:
-		m.alreadySent = true
-	}
-	return nil
-}
-
 func sendEmailValidationOTPCombineQueries(queries ...eventstore.Query) eventstore.Query {
 	combined := eventstore.Query{}
 	for _, query := range queries {
@@ -113,7 +90,7 @@ func sendEmailValidationOTPUserRegisteredQuery(userRegisteredID string) eventsto
 	}}}}
 }
 
-func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailValidationOTPCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (*sendEmailValidationOTPContext, error) {
+func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailValidationOTPCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyReader) (*sendEmailValidationOTPContext, error) {
 	generatedQuery := sendEmailValidationOTPEmailVerificationOTPGeneratedQuery(command.EmailVerificationOTPGeneratedID)
 	userQuery := sendEmailValidationOTPUserRegisteredQuery(command.UserRegisteredID)
 	sentQuery := sendEmailValidationOTPEmailVerificationOTPSentQuery(command.EmailVerificationOTPGeneratedID)
@@ -123,30 +100,61 @@ func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailVal
 		return nil, err
 	}
 
-	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
-			return nil, err
+	model := &sendEmailValidationOTPContext{position: latest.ContextPosition, query: query}
+	var registered *UserRegisteredEvent
+	for _, resolved := range eventstore.EventsFromLatest(latest.Results) {
+		switch resolved.Event.EventType {
+		case UserRegistered:
+			value, err := DecodeUserRegisteredEvent(resolved.Event)
+			if err != nil {
+				return nil, err
+			}
+			if value.UserRegisteredID != command.UserRegisteredID {
+				return nil, errors.New("registered user does not match OTP email context")
+			}
+			registered = &value
+		case EmailVerificationOTPGenerated:
+			value, err := DecodeEmailVerificationOTPGeneratedEvent(resolved.Event)
+			if err != nil {
+				return nil, err
+			}
+			if value.EmailVerificationOTPGeneratedID != command.EmailVerificationOTPGeneratedID || value.Scopes.UserRegisteredID != command.UserRegisteredID {
+				return nil, errors.New("email verification OTP does not belong to registered user")
+			}
+			model.otpID = value.EmailVerificationOTPGeneratedID
+			model.code = value.OTPCode
+		case EmailVerificationOTPSent:
+			value, err := DecodeEmailVerificationOTPSentEvent(resolved.Event)
+			if err != nil {
+				return nil, err
+			}
+			if value.Scopes.EmailVerificationOTPGeneratedID != command.EmailVerificationOTPGeneratedID {
+				return nil, errors.New("email verification sent scope does not match generation context")
+			}
+			model.alreadySent = true
+		default:
+			return nil, eventstore.ErrInvalidEvent
 		}
 	}
-	model := &sendEmailValidationOTPContext{
-		position: latest.ContextPosition,
-		events:   events,
-		query:    query,
+	if model.alreadySent {
+		if model.otpID == "" {
+			return nil, errors.New("email verification OTP generation event not found")
+		}
+		return model, nil
 	}
-	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
+	if model.otpID == "" || registered == nil {
+		return model, nil
+	}
+	key, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, eventstore.ErrNotFound
 	}
-	model.subjectKey = subjectKey
-	for _, resolved := range model.events {
-		if err := model.handle(resolved); err != nil {
-			return nil, err
-		}
+	model.email, err = protectedpii.FromEnv().DecryptWithDataKey(registered.Email, key)
+	if err != nil {
+		return nil, err
 	}
-
 	return model, nil
 }

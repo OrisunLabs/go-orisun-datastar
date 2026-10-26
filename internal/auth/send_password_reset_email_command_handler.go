@@ -20,18 +20,13 @@ type SendPasswordResetEmailCommand struct {
 }
 
 type sendPasswordResetEmailContext struct {
-	requestID   string
-	email       string
-	token       string
-	expiresAt   string
-	subjectKey  protectedpii.SubjectDataKey
-	alreadySent bool
-	position    eventstore.Position
-	events      []eventstore.ResolvedEvent
-	query       eventstore.Query
+	requestID, email, token, expiresAt string
+	alreadySent                        bool
+	position                           eventstore.Position
+	query                              eventstore.Query
 }
 
-func SendPasswordResetEmailCommandHandler(ctx context.Context, command SendPasswordResetEmailCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, sender EmailSender, appURL string, keys SubjectPiiKeyPort) error {
+func SendPasswordResetEmailCommandHandler(ctx context.Context, command SendPasswordResetEmailCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, sender EmailSender, appURL string, keys SubjectPiiKeyReader) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
@@ -64,31 +59,6 @@ func SendPasswordResetEmailCommandHandler(ctx context.Context, command SendPassw
 	return err
 }
 
-func (m *sendPasswordResetEmailContext) handle(resolved eventstore.ResolvedEvent) error {
-	switch resolved.Event.EventType {
-	case PasswordResetRequested:
-		m.requestID, _ = resolved.Event.Data[PasswordResetRequestedIDField].(string)
-		protector := protectedpii.FromEnv()
-		decryptedemail, err := protectedpii.DecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, PasswordResetRequestedEmailField)
-		if err != nil {
-			return err
-		}
-		m.email = decryptedemail
-		decryptedtoken, err := protectedpii.DecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, PasswordResetRequestedTokenField)
-		if err != nil {
-			return err
-		}
-		if protector.SensitiveBlindIndex(PasswordResetRequestedTokenField, decryptedtoken) != resolved.Event.Data[PasswordResetRequestedTokenHashField] {
-			return eventstore.ErrInvalidEvent
-		}
-		m.token = decryptedtoken
-		m.expiresAt, _ = resolved.Event.Data[PasswordResetRequestedExpiresAtField].(string)
-	case PasswordResetEmailSent:
-		m.alreadySent = true
-	}
-	return nil
-}
-
 func sendPasswordResetEmailCombineQueries(queries ...eventstore.Query) eventstore.Query {
 	combined := eventstore.Query{}
 	for _, query := range queries {
@@ -111,7 +81,7 @@ func sendPasswordResetEmailPasswordResetRequestedQuery(requestID string) eventst
 	}}}}
 }
 
-func loadSendPasswordResetEmailContext(ctx context.Context, command SendPasswordResetEmailCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (*sendPasswordResetEmailContext, error) {
+func loadSendPasswordResetEmailContext(ctx context.Context, command SendPasswordResetEmailCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyReader) (*sendPasswordResetEmailContext, error) {
 	requestedQuery := sendPasswordResetEmailPasswordResetRequestedQuery(command.PasswordResetRequestedID)
 	sentQuery := sendPasswordResetEmailPasswordResetEmailSentQuery(command.PasswordResetRequestedID)
 	query := sendPasswordResetEmailCombineQueries(requestedQuery, sentQuery)
@@ -120,36 +90,61 @@ func loadSendPasswordResetEmailContext(ctx context.Context, command SendPassword
 		return nil, err
 	}
 
-	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
-			return nil, err
-		}
-	}
-	model := &sendPasswordResetEmailContext{
-		position: latest.ContextPosition,
-		events:   events,
-		query:    query,
-	}
-	for _, resolved := range model.events {
-		if resolved.Event.EventType == PasswordResetRequested {
-			userRegisteredID, _ := eventstore.Scopes(resolved.Event.Data)[ScopeUserRegisteredIDKey].(string)
-			subjectKey, ok, err := keys.GetSubjectDataKey(ctx, userRegisteredID)
+	model := &sendPasswordResetEmailContext{position: latest.ContextPosition, query: query}
+	var requested *PasswordResetRequestedEvent
+	for _, resolved := range eventstore.EventsFromLatest(latest.Results) {
+		switch resolved.Event.EventType {
+		case PasswordResetRequested:
+			value, err := DecodePasswordResetRequestedEvent(resolved.Event)
 			if err != nil {
 				return nil, err
 			}
-			if !ok {
-				return nil, eventstore.ErrNotFound
+			if value.PasswordResetRequestedID != command.PasswordResetRequestedID {
+				return nil, errors.New("password reset request does not match context")
 			}
-			model.subjectKey = subjectKey
-			break
+			requested = &value
+			model.requestID = value.PasswordResetRequestedID
+			model.expiresAt = value.ExpiresAt
+		case PasswordResetEmailSent:
+			value, err := DecodePasswordResetEmailSentEvent(resolved.Event)
+			if err != nil {
+				return nil, err
+			}
+			if value.Scopes.PasswordResetRequestedID != command.PasswordResetRequestedID {
+				return nil, errors.New("password reset email sent scope does not match request context")
+			}
+			model.alreadySent = true
+		default:
+			return nil, eventstore.ErrInvalidEvent
 		}
 	}
-	for _, resolved := range model.events {
-		if err := model.handle(resolved); err != nil {
-			return nil, err
+	if model.alreadySent {
+		if requested == nil {
+			return nil, errors.New("password reset request event not found")
 		}
+		return model, nil
 	}
-
+	if requested == nil {
+		return model, nil
+	}
+	key, ok, err := keys.GetSubjectDataKey(ctx, requested.Scopes.UserRegisteredID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, eventstore.ErrNotFound
+	}
+	protector := protectedpii.FromEnv()
+	model.email, err = protector.DecryptWithDataKey(requested.Email, key)
+	if err != nil {
+		return nil, err
+	}
+	model.token, err = protector.DecryptWithDataKey(requested.ResetToken, key)
+	if err != nil {
+		return nil, err
+	}
+	if model.token == "" || protector.SensitiveBlindIndex(PasswordResetRequestedTokenField, model.token) != requested.ResetTokenHash {
+		return nil, eventstore.ErrInvalidEvent
+	}
 	return model, nil
 }

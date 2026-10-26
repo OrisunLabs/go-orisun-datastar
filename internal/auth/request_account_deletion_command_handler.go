@@ -57,14 +57,17 @@ func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAc
 }
 
 type accountDeletionRequestContext struct {
-	userExists       bool
-	passwordHash     string
-	passwordPosition *eventstore.Position
-	requestedID      string
-	deleted          bool
-	position         eventstore.Position
-	events           []eventstore.ResolvedEvent
-	query            eventstore.Query
+	userExists          bool
+	passwordHash        string
+	passwordPosition    *eventstore.Position
+	requestedID         string
+	requestedAuthUserID string
+	deletedRequestID    string
+	deletedAuthUserID   string
+	deleted             bool
+	position            eventstore.Position
+	events              []eventstore.ResolvedEvent
+	query               eventstore.Query
 }
 
 func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID string, retriever eventstore.LatestRetriever) (*accountDeletionRequestContext, error) {
@@ -123,6 +126,7 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 				return nil, eventstore.ErrInvalidEvent
 			}
 			model.requestedID = value.AccountDeletionRequestedID
+			model.requestedAuthUserID = value.AuthUserID
 		case AccountDeleted:
 			value, err := DecodeAccountDeletedEvent(resolved.Event)
 			if err != nil {
@@ -131,10 +135,15 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 			if value.Scopes.UserRegisteredID != userRegisteredID {
 				return nil, eventstore.ErrInvalidEvent
 			}
+			model.deletedRequestID = value.Scopes.AccountDeletionRequestedID
+			model.deletedAuthUserID = value.AuthUserID
 			model.deleted = true
 		default:
 			return nil, eventstore.ErrInvalidEvent
 		}
+	}
+	if model.deleted && (model.deletedRequestID != model.requestedID || model.deletedAuthUserID != model.requestedAuthUserID) {
+		return nil, errors.New("account deleted scope does not match request context")
 	}
 	return model, nil
 }

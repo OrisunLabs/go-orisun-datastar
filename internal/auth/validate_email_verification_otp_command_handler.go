@@ -40,7 +40,7 @@ func ValidateEmailVerificationOTPCommandHandler(ctx context.Context, command Val
 	}
 
 	validationID := uuidv7.NewString()
-	event, err := NewEmailVerificationOTPValidatedEvent(validationID, time.Now(), model.otpID, command.User.UserRegisteredID, nil)
+	event, err := NewEmailVerificationOTPValidatedEvent(validationID, time.Now(), model.otpID, model.userRegisteredID, nil)
 	if err != nil {
 		return err
 	}
@@ -49,6 +49,7 @@ func ValidateEmailVerificationOTPCommandHandler(ctx context.Context, command Val
 }
 
 type validateEmailVerificationOTPContext struct {
+	userRegisteredID string
 	userExists       bool
 	otpID            string
 	code             string
@@ -64,23 +65,28 @@ type latestOTP struct {
 	position  eventstore.Position
 }
 
-func latestEmailVerificationOTP(events []eventstore.ResolvedEvent) latestOTP {
-	otp := latestOTP{position: eventstore.NoEventPosition}
+func latestEmailVerificationOTP(events []eventstore.ResolvedEvent, userRegisteredID string) (latestOTP, error) {
+	var otp latestOTP
 	for _, resolved := range events {
-		if !resolved.Position.After(otp.position) {
+		if resolved.Event.EventType != EmailVerificationOTPGenerated {
 			continue
 		}
-		expiresAt, _ := resolved.Event.Data[EmailVerificationOTPExpiresAtField].(string)
-		parsed, err := time.Parse(time.RFC3339, expiresAt)
+		generated, err := DecodeEmailVerificationOTPGeneratedEvent(resolved.Event)
 		if err != nil {
-			continue
+			return latestOTP{}, err
 		}
-		otp.id, _ = resolved.Event.Data[EmailVerificationOTPGeneratedIDField].(string)
-		otp.code, _ = resolved.Event.Data[EmailVerificationOTPCodeField].(string)
-		otp.expiresAt = parsed
-		otp.position = resolved.Position
+		if generated.Scopes.UserRegisteredID != userRegisteredID {
+			return latestOTP{}, errors.New("email verification generation scope does not match context")
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, generated.ExpiresAt)
+		if err != nil {
+			return latestOTP{}, err
+		}
+		if otp.id == "" || resolved.Position.After(otp.position) {
+			otp = latestOTP{id: generated.EmailVerificationOTPGeneratedID, code: generated.OTPCode, expiresAt: expiresAt, position: resolved.Position}
+		}
 	}
-	return otp
+	return otp, nil
 }
 
 func loadValidateEmailVerificationOTPContext(ctx context.Context, command ValidateEmailVerificationOTPCommand, retriever eventstore.LatestRetriever) (*validateEmailVerificationOTPContext, error) {
@@ -93,15 +99,18 @@ func loadValidateEmailVerificationOTPContext(ctx context.Context, command Valida
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
+	otp, err := latestEmailVerificationOTP(events, command.User.UserRegisteredID)
+	if err != nil {
+		return nil, err
+	}
+	model := &validateEmailVerificationOTPContext{
+		userRegisteredID: command.User.UserRegisteredID, otpID: otp.id, code: otp.code, expiresAt: otp.expiresAt,
+		consistency: []eventstore.ConsistencyObservation{{Query: query, Position: latest.ContextPosition}},
+	}
+	for _, resolved := range events {
+		if err := model.handle(resolved); err != nil {
 			return nil, err
 		}
-	}
-	otp := latestEmailVerificationOTP(events)
-	model := &validateEmailVerificationOTPContext{
-		otpID: otp.id, code: otp.code, expiresAt: otp.expiresAt,
-		consistency: []eventstore.ConsistencyObservation{{Query: query, Position: latest.ContextPosition}},
 	}
 	// Only the validation criterion depends on the first response. Preserve both
 	// observations; a concurrent replacement OTP invalidates the first guard.
@@ -112,27 +121,51 @@ func loadValidateEmailVerificationOTPContext(ctx context.Context, command Valida
 			return nil, err
 		}
 		model.consistency = append(model.consistency, eventstore.ConsistencyObservation{Query: validationQuery, Position: validation.ContextPosition})
-		for _, checked := range eventstore.EventsFromLatest(validation.Results) {
-			if err := ValidateEvent(checked.Event); err != nil {
+		for _, resolved := range eventstore.EventsFromLatest(validation.Results) {
+			if resolved.Event.EventType != EmailVerificationOTPValidated {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			if err := model.handle(resolved); err != nil {
 				return nil, err
 			}
-			events = append(events, checked)
 		}
 	}
 
-	for _, event := range events {
-		model.handle(event)
-	}
 	return model, nil
 }
 
-func (m *validateEmailVerificationOTPContext) handle(resolved eventstore.ResolvedEvent) {
+func (m *validateEmailVerificationOTPContext) handle(resolved eventstore.ResolvedEvent) error {
 	switch resolved.Event.EventType {
 	case UserRegistered:
+		registered, err := DecodeUserRegisteredEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		if registered.UserRegisteredID != m.userRegisteredID {
+			return errors.New("registered user does not match verification context")
+		}
 		m.userExists = true
+	case EmailVerificationOTPGenerated:
+		generated, err := DecodeEmailVerificationOTPGeneratedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		if generated.EmailVerificationOTPGeneratedID != m.otpID || generated.Scopes.UserRegisteredID != m.userRegisteredID {
+			return errors.New("email verification generation scope does not match context")
+		}
 	case EmailVerificationOTPValidated:
+		validated, err := DecodeEmailVerificationOTPValidatedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		if validated.Scopes.UserRegisteredID != m.userRegisteredID || validated.Scopes.EmailVerificationOTPGeneratedID != m.otpID {
+			return errors.New("email verification validation scope does not match context")
+		}
 		m.alreadyValidated = true
+	default:
+		return eventstore.ErrInvalidEvent
 	}
+	return nil
 }
 
 func validateEmailVerificationOTPCombineQueries(queries ...eventstore.Query) eventstore.Query {

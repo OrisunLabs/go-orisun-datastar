@@ -15,10 +15,10 @@ type PasswordResetEmailToBeSentEventHandler struct {
 	saver     eventstore.SaverV2
 	sender    EmailSender
 	appURL    string
-	keys      SubjectPiiKeyPort
+	keys      SubjectPiiKeyReader
 }
 
-func NewPasswordResetEmailToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, appURL string, keys SubjectPiiKeyPort, logger *slog.Logger) (*PasswordResetEmailToBeSentEventHandler, error) {
+func NewPasswordResetEmailToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, appURL string, keys SubjectPiiKeyReader, logger *slog.Logger) (*PasswordResetEmailToBeSentEventHandler, error) {
 	handler := &PasswordResetEmailToBeSentEventHandler{retriever: retriever, saver: saver, sender: sender, appURL: appURL, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
