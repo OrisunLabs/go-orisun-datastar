@@ -13,7 +13,7 @@ PII lookup indexes use protected blind-index fields, not plaintext event fields.
 | `otp_ancestry` | `scopes.emailVerificationOTPGeneratedId` | `EmailVerificationOTPValidated`, `EmailVerificationOTPSent` | OTP sent/validated idempotency. |
 | `password_reset_requested_id` | `passwordResetRequestedId` | `PasswordResetRequested` | Password reset email/send completion context. |
 | `reset_ancestry` | `scopes.passwordResetRequestedId` | `PasswordResetEmailSent`, `PasswordResetCompleted` | Password reset idempotency and completion. |
-| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendant events | Per-user stream reconstruction and projections. |
+| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendant events | Per-user contexts and projections; latest password-change/reset-completion authority for password-authorized mutations. |
 | `profile_owner` | `userId` | Profile image/header/bio events | Cross-domain user reference for latest profile authority and consistency guards. |
 | `todo_created` | `todoCreatedId`, `userId` | `TodoCreated` | Creation identity, ownership and collision guard. |
 | `todo_ancestry` | `scopes.todoCreatedId`, `userId` | `TodoRenamed`, `TodoCompleted`, `TodoReopened`, `TodoDeleted` | Per-todo authority, ownership and idempotency context. |
@@ -35,3 +35,5 @@ Auth descendants use plural `scopes`. Their ancestry indexes have new semantic n
 Atomic todo bulk contexts batch the existing five per-todo lifecycle criteria for every caller-selected member, plus a target-event `eventId` receipt criterion for each caller-owned operation ID. `todo_created` / `todo_ancestry` cover lifecycle authority; Orisun’s built-in `__eventType` / `__eventId` selectors cover exact outcome receipts. One combined query/position observation guards the complete append. No additional application index is declared for these built-in envelope lookups.
 
 Todo creation now batches `TodoCreated` envelope-ID collision/retry criteria through `CreateTodos`. `RenameTodos` batches the same five lifecycle predicates as other todo mutations plus `TodoRenamed` envelope-ID receipts, and checks expected titles from the decoded latest facts. Single-item routes use these same batch handlers and index shapes; there are no separate single-item command queries.
+
+Password changes batch `UserRegistered` by `userRegisteredId` with `PasswordChanged` and `PasswordResetCompleted` by `scopes.userRegisteredId`. Deletion requests batch those same three password-authority criteria with their existing deletion request/completion criteria. Every criterion includes `eventType`. The `user_registered_id` and `auth_user_ancestry` indexes cover these predicates; the unchanged returned combined observation guards the append against either kind of concurrent credential update. No additional index is needed.
