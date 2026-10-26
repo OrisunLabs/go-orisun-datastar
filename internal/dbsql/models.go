@@ -95,7 +95,7 @@ type SubjectPiiKey struct {
 
 type TodoItem struct {
 	TodoID                   string             `json:"todo_id"`
-	UserRegisteredID         string             `json:"user_registered_id"`
+	UserID                   string             `json:"user_id"`
 	Title                    string             `json:"title"`
 	Completed                bool               `json:"completed"`
 	CompletedAt              pgtype.Timestamptz `json:"completed_at"`

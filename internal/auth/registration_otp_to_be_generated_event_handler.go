@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"log/slog"
-	"strings"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
@@ -13,11 +12,11 @@ const RegistrationOTPToBeGeneratedEventHandlerName = "todo_registration_otp_to_b
 
 type RegistrationOTPToBeGeneratedEventHandler struct {
 	global    *eventstore.GlobalEventHandler
-	saver     eventstore.Saver
+	saver     eventstore.SaverV2
 	retriever eventstore.Retriever
 }
 
-func NewRegistrationOTPToBeGeneratedEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, saver eventstore.Saver, retriever eventstore.Retriever, logger *slog.Logger) (*RegistrationOTPToBeGeneratedEventHandler, error) {
+func NewRegistrationOTPToBeGeneratedEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, saver eventstore.SaverV2, retriever eventstore.Retriever, logger *slog.Logger) (*RegistrationOTPToBeGeneratedEventHandler, error) {
 	handler := &RegistrationOTPToBeGeneratedEventHandler{saver: saver, retriever: retriever}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
@@ -47,19 +46,16 @@ func (h *RegistrationOTPToBeGeneratedEventHandler) handle(ctx context.Context, r
 	if resolved.Event.EventType != UserRegistered {
 		return nil
 	}
-	userRegisteredID, _ := resolved.Event.Data[UserRegisteredIDField].(string)
-	emailAddress, _ := resolved.Event.Data[UserRegisteredEmailField].(string)
-	firstName, _ := resolved.Event.Data[UserRegisteredFirstNameField].(string)
-	lastName, _ := resolved.Event.Data[UserRegisteredLastNameField].(string)
-	username, _ := resolved.Event.Data[UserRegisteredUsernameField].(string)
-
-	user := views.User{
-		UserRegisteredID: userRegisteredID,
-		Name:             strings.TrimSpace(firstName + " " + lastName),
-		Username:         username,
-		Email:            emailAddress,
+	if err := ValidateEvent(resolved.Event); err != nil {
+		return err
 	}
-	_, err := GenerateEmailVerificationOTPCommandHandler(ctx, GenerateEmailVerificationOTPCommand{
+	value, err := DecodeUserRegisteredEvent(resolved.Event)
+	if err != nil {
+		return err
+	}
+	user := views.User{UserRegisteredID: value.UserRegisteredID}
+
+	_, err = GenerateEmailVerificationOTPCommandHandler(ctx, GenerateEmailVerificationOTPCommand{
 		User:     user,
 		Metadata: eventstore.EventHandlerCommandMetadata(RegistrationOTPToBeGeneratedEventHandlerName, resolved),
 	}, h.saver, h.retriever)
@@ -67,5 +63,5 @@ func (h *RegistrationOTPToBeGeneratedEventHandler) handle(ctx context.Context, r
 }
 
 func userRegisteredEventHandlerQuery() eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: "eventType", Value: UserRegistered}}}}}
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}}}}}
 }

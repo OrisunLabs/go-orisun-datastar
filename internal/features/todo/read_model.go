@@ -19,8 +19,8 @@ func NewReadModel(db *pgxpool.Pool) *ReadModel {
 	return &ReadModel{queries: dbsql.New(db)}
 }
 
-func (m *ReadModel) List(ctx context.Context, userRegisteredID string) ([]views.Todo, error) {
-	rows, err := m.queries.ListTodos(ctx, userRegisteredID)
+func (m *ReadModel) List(ctx context.Context, userID string) ([]views.Todo, error) {
+	rows, err := m.queries.ListTodos(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (m *ReadModel) List(ctx context.Context, userRegisteredID string) ([]views.
 func (m *ReadModel) InsertCreatedTodo(ctx context.Context, event TodoCreatedProjection) error {
 	return m.queries.InsertCreatedTodo(ctx, dbsql.InsertCreatedTodoParams{
 		TodoID:                   event.TodoID,
-		UserRegisteredID:         event.UserRegisteredID,
+		UserID:                   event.UserID,
 		Title:                    event.Title,
 		LastEventCommitPosition:  event.Position.Commit,
 		LastEventPreparePosition: event.Position.Prepare,
@@ -84,15 +84,6 @@ func (m *ReadModel) DeleteTodo(ctx context.Context, event TodoDeletedProjection)
 		LastEventPreparePosition: event.Position.Prepare,
 		TodoID:                   event.TodoID,
 	})
-}
-
-func parseTime(value any) time.Time {
-	text, _ := value.(string)
-	parsed, err := time.Parse(time.RFC3339, text)
-	if err != nil {
-		return time.Now()
-	}
-	return parsed
 }
 
 func pgTime(value time.Time) pgtype.Timestamptz {

@@ -24,7 +24,7 @@ type UpdateUserNameResult struct {
 	Skipped bool
 }
 
-func UpdateUserNameCommandHandler(ctx context.Context, command UpdateUserNameCommand, saver eventstore.Saver, retriever eventstore.Retriever, keys SubjectPiiKeyPort) (UpdateUserNameResult, error) {
+func UpdateUserNameCommandHandler(ctx context.Context, command UpdateUserNameCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (UpdateUserNameResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return UpdateUserNameResult{}, err
 	}
@@ -39,8 +39,11 @@ func UpdateUserNameCommandHandler(ctx context.Context, command UpdateUserNameCom
 		return UpdateUserNameResult{Name: model.nextName, Skipped: true}, nil
 	}
 	eventID := uuidv7.NewString()
-	event := NewUserNameChangedEvent(eventID, model.nextName, time.Now(), command.User.UserRegisteredID, model.subjectKey, nil)
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+	event, err := NewUserNameChangedEvent(eventID, model.nextName, time.Now(), command.User.UserRegisteredID, model.subjectKey, nil)
+	if err != nil {
+		return UpdateUserNameResult{}, err
+	}
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return UpdateUserNameResult{}, err
 	}
 	return UpdateUserNameResult{Name: model.nextName}, nil
@@ -56,19 +59,24 @@ type updateUserNameContext struct {
 	query      eventstore.Query
 }
 
-func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameCommand, retriever eventstore.Retriever, keys SubjectPiiKeyPort) (*updateUserNameContext, error) {
+func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (*updateUserNameContext, error) {
 	name := strings.TrimSpace(command.Name)
 	if name == "" {
 		return nil, errors.New("name is required")
 	}
-	userQuery := userRegisteredQuery(command.User.UserRegisteredID)
-	nameQuery := userNameChangedByUserQuery(command.User.UserRegisteredID)
-	query := combineQueries(userQuery, nameQuery)
+	userQuery := updateUserNameUserRegisteredQuery(command.User.UserRegisteredID)
+	nameQuery := updateUserNameUserNameChangedByUserQuery(command.User.UserRegisteredID)
+	query := updateUserNameCombineQueries(userQuery, nameQuery)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
 	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, command.User.UserRegisteredID)
 	if err != nil {
 		return nil, err
@@ -78,27 +86,62 @@ func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameComman
 	}
 	model := &updateUserNameContext{nextName: name, subjectKey: subjectKey, position: latest.ContextPosition, events: events, query: query}
 	for _, event := range events {
-		model.handle(event)
+		if err := model.handle(event); err != nil {
+			return nil, err
+		}
 	}
 	return model, nil
 }
 
-func (m *updateUserNameContext) handle(resolved eventstore.ResolvedEvent) {
+func (m *updateUserNameContext) handle(resolved eventstore.ResolvedEvent) error {
 	switch resolved.Event.EventType {
 	case UserRegistered:
 		m.userExists = true
 		protector := protectedpii.FromEnv()
-		firstName := protectedpii.MustDecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredFirstNameField)
-		lastName := protectedpii.MustDecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredLastNameField)
-		username := protectedpii.MustDecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredUsernameField)
+		firstName, err := protectedpii.DecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredFirstNameField)
+		if err != nil {
+			return err
+		}
+		lastName, err := protectedpii.DecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredLastNameField)
+		if err != nil {
+			return err
+		}
+		username, err := protectedpii.DecryptEventStringWithDataKey(protector, m.subjectKey, resolved.Event.Data, UserRegisteredUsernameField)
+		if err != nil {
+			return err
+		}
 		m.name = strings.TrimSpace(firstName + " " + lastName)
 		if m.name == "" {
 			m.name = username
 		}
 	case UserNameChanged:
-		m.name = protectedpii.MustDecryptEventStringWithDataKey(protectedpii.FromEnv(), m.subjectKey, resolved.Event.Data, UserNameChangedNameField)
+		decryptedname, err := protectedpii.DecryptEventStringWithDataKey(protectedpii.FromEnv(), m.subjectKey, resolved.Event.Data, UserNameChangedNameField)
+		if err != nil {
+			return err
+		}
+		m.name = decryptedname
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+	return nil
+}
+
+func updateUserNameCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func updateUserNameUserNameChangedByUserQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserNameChanged},
+		{Key: ScopeUserRegisteredIDField, Value: userRegisteredID},
+	}}}}
+}
+
+func updateUserNameUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserRegistered},
+		{Key: UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
 }

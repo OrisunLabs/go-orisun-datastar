@@ -9,15 +9,15 @@ import (
 )
 
 type ClearCompletedTodosCommand struct {
-	UserRegisteredID string
-	Metadata         CommandMetadata
+	UserID   string
+	Metadata CommandMetadata
 }
 
-func ClearCompletedTodosCommandHandler(ctx context.Context, command ClearCompletedTodosCommand, readModel TodoReadModelReader, saver eventstore.Saver, retriever eventstore.Retriever) error {
+func ClearCompletedTodosCommandHandler(ctx context.Context, command ClearCompletedTodosCommand, readModel TodoReadModelReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
-	model, err := loadClearCompletedTodosContext(ctx, readModel, command.UserRegisteredID)
+	model, err := loadClearCompletedTodosContext(ctx, readModel, command.UserID)
 	if err != nil {
 		return err
 	}
@@ -26,9 +26,9 @@ func ClearCompletedTodosCommandHandler(ctx context.Context, command ClearComplet
 			continue
 		}
 		if _, err := DeleteTodoCommandHandler(ctx, DeleteTodoCommand{
-			UserRegisteredID: command.UserRegisteredID,
-			TodoID:           item.TodoID,
-			Metadata:         command.Metadata,
+			UserID:   command.UserID,
+			TodoID:   item.TodoID,
+			Metadata: command.Metadata,
 		}, saver, retriever); err != nil {
 			return err
 		}
@@ -40,8 +40,8 @@ type clearCompletedTodosContext struct {
 	todos []views.Todo
 }
 
-func loadClearCompletedTodosContext(ctx context.Context, readModel TodoReadModelReader, userRegisteredID string) (*clearCompletedTodosContext, error) {
-	todos, err := readModel.List(ctx, userRegisteredID)
+func loadClearCompletedTodosContext(ctx context.Context, readModel TodoReadModelReader, userID string) (*clearCompletedTodosContext, error) {
+	todos, err := readModel.List(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

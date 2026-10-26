@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -28,19 +27,17 @@ type AuthUserProjectionEventHandler struct {
 	global        *eventstore.GlobalEventHandler
 	writer        AuthUserProjectionWriter
 	verifications AuthVerificationProjectionWriter
-	retriever     eventstore.Retriever
 	keys          SubjectPiiKeyPort
 }
 
 func NewAuthUserProjectionEventHandler(
 	subscriber eventstore.Subscriber,
 	checkpointer eventstore.Checkpointer,
-	retriever eventstore.Retriever,
 	writer AuthUserProjectionWriter,
 	verifications AuthVerificationProjectionWriter,
 	keys SubjectPiiKeyPort,
 	logger *slog.Logger) (*AuthUserProjectionEventHandler, error) {
-	handler := &AuthUserProjectionEventHandler{retriever: retriever, writer: writer, verifications: verifications, keys: keys}
+	handler := &AuthUserProjectionEventHandler{writer: writer, verifications: verifications, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
 		Checkpointer:    checkpointer,
@@ -66,6 +63,9 @@ func (h *AuthUserProjectionEventHandler) StopSubscribing() {
 }
 
 func (h *AuthUserProjectionEventHandler) handle(ctx context.Context, resolved eventstore.ResolvedEvent) error {
+	if err := ValidateEvent(resolved.Event); err != nil {
+		return err
+	}
 	switch resolved.Event.EventType {
 	case UserRegistered:
 		return h.handleUserRegistered(ctx, resolved)
@@ -85,105 +85,123 @@ func (h *AuthUserProjectionEventHandler) handle(ctx context.Context, resolved ev
 }
 
 func (h *AuthUserProjectionEventHandler) handleUserRegistered(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	protector := protectedpii.FromEnv()
-	userRegisteredID := stringValue(resolved.Event.Data[UserRegisteredIDField])
-	subjectKey, ok, err := h.keys.GetSubjectDataKey(ctx, userRegisteredID)
+	value, err := DecodeUserRegisteredEvent(resolved.Event)
+	if err != nil {
+		return err
+	}
+	subjectKey, ok, err := h.keys.GetSubjectDataKey(ctx, value.UserRegisteredID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return eventstore.ErrNotFound
 	}
-	firstName := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, resolved.Event.Data, UserRegisteredFirstNameField)
-	lastName := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, resolved.Event.Data, UserRegisteredLastNameField)
-	return h.writer.CreateRegisteredUserAccount(ctx, RegisterUserResult{
-		UserRegisteredID: userRegisteredID,
-		Username:         protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, resolved.Event.Data, UserRegisteredUsernameField),
-		Email:            protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, resolved.Event.Data, UserRegisteredEmailField),
-		FirstName:        firstName,
-		LastName:         lastName,
-		PasswordHash:     stringValue(resolved.Event.Data[UserRegisteredPasswordHashField]),
-	})
+	protector := protectedpii.FromEnv()
+	username, err := protector.DecryptWithDataKey(value.Username, subjectKey)
+	if err != nil {
+		return err
+	}
+	email, err := protector.DecryptWithDataKey(value.Email, subjectKey)
+	if err != nil {
+		return err
+	}
+	first, err := protector.DecryptWithDataKey(value.FirstName, subjectKey)
+	if err != nil {
+		return err
+	}
+	last, err := protector.DecryptWithDataKey(value.LastName, subjectKey)
+	if err != nil {
+		return err
+	}
+	return h.writer.CreateRegisteredUserAccount(ctx, RegisterUserResult{UserRegisteredID: value.UserRegisteredID, Username: username, Email: email, FirstName: first, LastName: last, PasswordHash: value.PasswordHash})
 }
 
 func (h *AuthUserProjectionEventHandler) handleUserNameChanged(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID := stringValue(eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey])
-	subjectKey, ok, err := h.keys.GetSubjectDataKey(ctx, userRegisteredID)
+	value, err := DecodeUserNameChangedEvent(resolved.Event)
+	if err != nil {
+		return err
+	}
+	key, ok, err := h.keys.GetSubjectDataKey(ctx, value.Scopes.UserRegisteredID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return eventstore.ErrNotFound
 	}
-	name := protectedpii.MustDecryptEventStringWithDataKey(protectedpii.FromEnv(), subjectKey, resolved.Event.Data, UserNameChangedNameField)
-	if userRegisteredID == "" || strings.TrimSpace(name) == "" {
-		return nil
+	name, err := protectedpii.FromEnv().DecryptWithDataKey(value.Name, key)
+	if err != nil {
+		return err
 	}
-	return h.writer.UpdateNameByRegisteredID(ctx, userRegisteredID, name)
+	if name == "" {
+		return eventstore.ErrInvalidEvent
+	}
+	return h.writer.UpdateNameByRegisteredID(ctx, value.Scopes.UserRegisteredID, name)
 }
 
 func (h *AuthUserProjectionEventHandler) handleEmailVerificationOTPGenerated(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID := stringValue(eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey])
-	otpID := stringValue(resolved.Event.Data[EmailVerificationOTPGeneratedIDField])
-	code := stringValue(resolved.Event.Data[EmailVerificationOTPCodeField])
-	expiresAt, err := time.Parse(time.RFC3339, stringValue(resolved.Event.Data[EmailVerificationOTPExpiresAtField]))
-	if userRegisteredID == "" || otpID == "" || code == "" || err != nil {
-		return nil
+	value, err := DecodeEmailVerificationOTPGeneratedEvent(resolved.Event)
+	if err != nil {
+		return err
 	}
-	return h.verifications.CreateEmailVerificationOTP(ctx, userRegisteredID, otpID, code, expiresAt)
+	expires, _ := time.Parse(time.RFC3339Nano, value.ExpiresAt)
+	return h.verifications.CreateEmailVerificationOTP(ctx, value.Scopes.UserRegisteredID, value.EmailVerificationOTPGeneratedID, value.OTPCode, expires)
 }
 
 func (h *AuthUserProjectionEventHandler) handleEmailVerificationOTPValidated(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey].(string)
-	if userRegisteredID == "" {
-		otpID, _ := eventstore.Scope(resolved.Event.Data)[ScopeEmailVerificationOTPGeneratedIDKey].(string)
-		generatedEvents, err := h.retriever.GetEvents(ctx, eventstore.NoEventPosition, 1, eventstore.Forward, emailVerificationOTPGeneratedQuery(otpID))
-		if err != nil {
-			return err
-		}
-		if len(generatedEvents) == 0 {
-			return nil
-		}
-		userRegisteredID, _ = eventstore.Scope(generatedEvents[0].Event.Data)[ScopeUserRegisteredIDKey].(string)
+	value, err := DecodeEmailVerificationOTPValidatedEvent(resolved.Event)
+	if err != nil {
+		return err
 	}
-	if userRegisteredID == "" {
-		return nil
-	}
-	return h.writer.MarkEmailVerified(ctx, userRegisteredID)
+	return h.writer.MarkEmailVerified(ctx, value.Scopes.UserRegisteredID)
 }
 
 func (h *AuthUserProjectionEventHandler) handlePasswordResetRequested(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID := stringValue(eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey])
-	requestID := stringValue(resolved.Event.Data[PasswordResetRequestedIDField])
-	token := stringValue(resolved.Event.Data[PasswordResetRequestedTokenField])
-	expiresAt, err := time.Parse(time.RFC3339, stringValue(resolved.Event.Data[PasswordResetRequestedExpiresAtField]))
-	if userRegisteredID == "" || requestID == "" || token == "" || err != nil {
-		return nil
+	value, err := DecodePasswordResetRequestedEvent(resolved.Event)
+	if err != nil {
+		return err
 	}
-	return h.verifications.CreatePasswordReset(ctx, userRegisteredID, requestID, token, expiresAt)
+	key, ok, err := h.keys.GetSubjectDataKey(ctx, value.Scopes.UserRegisteredID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return eventstore.ErrNotFound
+	}
+	token, err := protectedpii.FromEnv().DecryptWithDataKey(value.ResetToken, key)
+	if err != nil {
+		return err
+	}
+	if token == "" || protectedpii.FromEnv().SensitiveBlindIndex(PasswordResetRequestedTokenField, token) != value.ResetTokenHash {
+		return eventstore.ErrInvalidEvent
+	}
+	expires, _ := time.Parse(time.RFC3339Nano, value.ExpiresAt)
+	return h.verifications.CreatePasswordReset(ctx, value.Scopes.UserRegisteredID, value.PasswordResetRequestedID, token, expires)
 }
 
 func (h *AuthUserProjectionEventHandler) handlePasswordUpdated(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID := stringValue(eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey])
-	passwordHash := stringValue(resolved.Event.Data[PasswordChangedPasswordHashField])
 	if resolved.Event.EventType == PasswordResetCompleted {
-		passwordHash = stringValue(resolved.Event.Data[PasswordResetCompletedPasswordHashField])
+		value, err := DecodePasswordResetCompletedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		return h.writer.UpdatePasswordByRegisteredID(ctx, value.Scopes.UserRegisteredID, value.PasswordHash)
 	}
-	if userRegisteredID == "" || passwordHash == "" {
-		return nil
+	value, err := DecodePasswordChangedEvent(resolved.Event)
+	if err != nil {
+		return err
 	}
-	return h.writer.UpdatePasswordByRegisteredID(ctx, userRegisteredID, passwordHash)
+	return h.writer.UpdatePasswordByRegisteredID(ctx, value.Scopes.UserRegisteredID, value.PasswordHash)
 }
 
 func authUserProjectionEventHandlerQuery() eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: UserRegistered}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: UserNameChanged}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: EmailVerificationOTPGenerated}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: EmailVerificationOTPValidated}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: PasswordResetRequested}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: PasswordResetCompleted}}},
-		{Tags: []eventstore.Tag{{Key: "eventType", Value: PasswordChanged}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserNameChanged}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPValidated}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetRequested}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetCompleted}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordChanged}}},
 	}}
 }
 

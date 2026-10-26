@@ -10,7 +10,7 @@ import (
 const ProfileImageUploadedAuthUserEventHandlerName = "profile_image_uploaded_better_auth_event_handler"
 
 type AuthUserImageBridge interface {
-	UpdateImage(ctx context.Context, userRegisteredID, imageURL string) error
+	UpdateImage(ctx context.Context, userID, imageURL string) error
 }
 
 type ProfileImageUploadedAuthUserEventHandler struct {
@@ -49,17 +49,17 @@ func (h *ProfileImageUploadedAuthUserEventHandler) handle(ctx context.Context, r
 	if resolved.Event.EventType != ProfileImageUploaded {
 		return nil
 	}
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
-	imageURL, _ := resolved.Event.Data[ProfileImageURLField].(string)
-	if userRegisteredID == "" || imageURL == "" {
-		return nil
-	}
-	if err := h.bridge.UpdateImage(ctx, userRegisteredID, imageURL); err != nil {
+	value, err := DecodeProfileImageUploadedEvent(resolved.Event)
+	if err != nil {
 		return err
 	}
-	return h.publisher.Publish(ctx, Channel(userRegisteredID), map[string]string{"userRegisteredId": userRegisteredID})
+
+	if err := h.bridge.UpdateImage(ctx, value.UserID, value.ImageURL); err != nil {
+		return err
+	}
+	return h.publisher.Publish(ctx, Channel(value.UserID), map[string]string{"userId": value.UserID})
 }
 
 func profileImageUploadedAuthUserEventHandlerQuery() eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: "eventType", Value: ProfileImageUploaded}}}}}
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: ProfileImageUploaded}}}}}
 }

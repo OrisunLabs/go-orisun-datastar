@@ -86,7 +86,7 @@ func (s Server) updateBio(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	err := profile.UpdateProfileBioCommandHandler(r.Context(), profile.UpdateProfileBioCommand{
-		User:     user,
+		UserID:   user.UserRegisteredID,
 		Bio:      r.FormValue("bio"),
 		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
 	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
@@ -115,7 +115,7 @@ func (s Server) uploadImage(w http.ResponseWriter, r *http.Request, header bool)
 		return
 	}
 	if _, err := profile.UploadProfileImageCommandHandler(r.Context(), profile.UploadProfileImageCommand{
-		User:        user,
+		UserID:      user.UserRegisteredID,
 		Data:        data,
 		ContentType: contentType,
 		Header:      header,

@@ -13,7 +13,7 @@ import (
 const TodoReadModelEventHandlerName = "todo_read_model_event_handler"
 
 type TodoReadModelReader interface {
-	List(ctx context.Context, userRegisteredID string) ([]views.Todo, error)
+	List(ctx context.Context, userID string) ([]views.Todo, error)
 }
 
 type TodoReadModelWriter interface {
@@ -25,11 +25,11 @@ type TodoReadModelWriter interface {
 }
 
 type TodoCreatedProjection struct {
-	Position         eventstore.Position
-	TodoID           string
-	UserRegisteredID string
-	Title            string
-	CreatedAt        time.Time
+	Position  eventstore.Position
+	TodoID    string
+	UserID    string
+	Title     string
+	CreatedAt time.Time
 }
 
 type TodoRenamedProjection struct {
@@ -92,36 +92,35 @@ func (h *TodoReadModelEventHandler) StopSubscribing() {
 func TodoReadModelEventHandlerQuery() eventstore.Query {
 	criteria := make([]eventstore.Criterion, 0, 5)
 	for _, eventType := range []string{TodoCreated, TodoRenamed, TodoCompleted, TodoReopened, TodoDeleted} {
-		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{{Key: "eventType", Value: eventType}}})
+		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: eventType}}})
 	}
 	return eventstore.Query{Criteria: criteria}
 }
 
 func (h *TodoReadModelEventHandler) handle(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	data := resolved.Event.Data
-	scope := eventstore.Scope(data)
-	todoID, _ := scope[TodoScopeIDKey].(string)
-	userRegisteredID, _ := scope[TodoScopeUserRegisteredIDKey].(string)
+	facts, err := decodeTodoEvent(resolved.Event)
+	if err != nil {
+		return err
+	}
+	todoID, userID := facts.todoID, facts.userID
 
 	switch resolved.Event.EventType {
 	case TodoCreated:
-		title, _ := data[TodoTitleField].(string)
 		if err := h.readModel.InsertCreatedTodo(ctx, TodoCreatedProjection{
-			Position:         resolved.Position,
-			TodoID:           todoID,
-			UserRegisteredID: userRegisteredID,
-			Title:            title,
-			CreatedAt:        parseTime(data[TodoCreatedAtField]),
+			Position:  resolved.Position,
+			TodoID:    todoID,
+			UserID:    userID,
+			Title:     facts.title,
+			CreatedAt: facts.at,
 		}); err != nil {
 			return err
 		}
 	case TodoRenamed:
-		title, _ := data[TodoTitleField].(string)
 		if err := h.readModel.RenameTodo(ctx, TodoRenamedProjection{
 			Position:  resolved.Position,
 			TodoID:    todoID,
-			Title:     title,
-			RenamedAt: parseTime(data[TodoRenamedAtField]),
+			Title:     facts.title,
+			RenamedAt: facts.at,
 		}); err != nil {
 			return err
 		}
@@ -129,7 +128,7 @@ func (h *TodoReadModelEventHandler) handle(ctx context.Context, resolved eventst
 		if err := h.readModel.CompleteTodo(ctx, TodoCompletedProjection{
 			Position:    resolved.Position,
 			TodoID:      todoID,
-			CompletedAt: parseTime(data[TodoCompletedAtField]),
+			CompletedAt: facts.at,
 		}); err != nil {
 			return err
 		}
@@ -137,7 +136,7 @@ func (h *TodoReadModelEventHandler) handle(ctx context.Context, resolved eventst
 		if err := h.readModel.ReopenTodo(ctx, TodoReopenedProjection{
 			Position:   resolved.Position,
 			TodoID:     todoID,
-			ReopenedAt: parseTime(data[TodoReopenedAtField]),
+			ReopenedAt: facts.at,
 		}); err != nil {
 			return err
 		}
@@ -145,7 +144,7 @@ func (h *TodoReadModelEventHandler) handle(ctx context.Context, resolved eventst
 		if err := h.readModel.DeleteTodo(ctx, TodoDeletedProjection{
 			Position:  resolved.Position,
 			TodoID:    todoID,
-			DeletedAt: parseTime(data[TodoDeletedAtField]),
+			DeletedAt: facts.at,
 		}); err != nil {
 			return err
 		}
@@ -153,8 +152,5 @@ func (h *TodoReadModelEventHandler) handle(ctx context.Context, resolved eventst
 		return fmt.Errorf("unhandled todo read model event type %q", resolved.Event.EventType)
 	}
 
-	if userRegisteredID == "" {
-		return nil
-	}
-	return h.publisher.Publish(ctx, Channel(userRegisteredID), map[string]string{"userRegisteredId": userRegisteredID})
+	return h.publisher.Publish(ctx, Channel(userID), map[string]string{"userId": userID})
 }

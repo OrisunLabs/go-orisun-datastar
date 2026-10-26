@@ -57,7 +57,7 @@ type Server struct {
 	Verifications       VerificationStore
 	Todos               todo.TodoReadModelReader
 	Profiles            ProfileReader
-	EventSaver          eventstore.Saver
+	EventSaver          eventstore.SaverV2
 	EventRetriever      eventstore.Retriever
 	ProfileStorage      profile.ObjectStore
 	Subscriber          MessageSubscriber

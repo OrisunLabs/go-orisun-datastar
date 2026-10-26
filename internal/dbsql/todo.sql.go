@@ -64,25 +64,25 @@ func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) error {
 	return err
 }
 
-const deleteTodosByRegisteredID = `-- name: DeleteTodosByRegisteredID :exec
+const deleteTodosByUserID = `-- name: DeleteTodosByUserID :exec
 DELETE FROM todo_items
-WHERE user_registered_id = $1
+WHERE user_id = $1
 `
 
-func (q *Queries) DeleteTodosByRegisteredID(ctx context.Context, userRegisteredID string) error {
-	_, err := q.db.Exec(ctx, deleteTodosByRegisteredID, userRegisteredID)
+func (q *Queries) DeleteTodosByUserID(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, deleteTodosByUserID, userID)
 	return err
 }
 
 const insertCreatedTodo = `-- name: InsertCreatedTodo :exec
-INSERT INTO todo_items (todo_id, user_registered_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
+INSERT INTO todo_items (todo_id, user_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
 VALUES ($1, $2, $3, false, null, null, $4, $5, $6, $6)
 ON CONFLICT (todo_id) DO NOTHING
 `
 
 type InsertCreatedTodoParams struct {
 	TodoID                   string             `json:"todo_id"`
-	UserRegisteredID         string             `json:"user_registered_id"`
+	UserID                   string             `json:"user_id"`
 	Title                    string             `json:"title"`
 	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
 	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
@@ -92,7 +92,7 @@ type InsertCreatedTodoParams struct {
 func (q *Queries) InsertCreatedTodo(ctx context.Context, arg InsertCreatedTodoParams) error {
 	_, err := q.db.Exec(ctx, insertCreatedTodo,
 		arg.TodoID,
-		arg.UserRegisteredID,
+		arg.UserID,
 		arg.Title,
 		arg.LastEventCommitPosition,
 		arg.LastEventPreparePosition,
@@ -104,7 +104,7 @@ func (q *Queries) InsertCreatedTodo(ctx context.Context, arg InsertCreatedTodoPa
 const listTodos = `-- name: ListTodos :many
 SELECT todo_id, title, completed, created_at, updated_at
 FROM todo_items
-WHERE user_registered_id = $1
+WHERE user_id = $1
   AND deleted_at IS NULL
 ORDER BY created_at DESC, todo_id DESC
 `
@@ -117,8 +117,8 @@ type ListTodosRow struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
-func (q *Queries) ListTodos(ctx context.Context, userRegisteredID string) ([]ListTodosRow, error) {
-	rows, err := q.db.Query(ctx, listTodos, userRegisteredID)
+func (q *Queries) ListTodos(ctx context.Context, userID string) ([]ListTodosRow, error) {
+	rows, err := q.db.Query(ctx, listTodos, userID)
 	if err != nil {
 		return nil, err
 	}

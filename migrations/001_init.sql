@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS profile_stats_username_idx ON profile_stats (username
 
 CREATE TABLE IF NOT EXISTS todo_items (
     todo_id TEXT PRIMARY KEY,
-    user_registered_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     completed BOOLEAN NOT NULL DEFAULT false,
     completed_at TIMESTAMPTZ,
@@ -110,8 +110,8 @@ CREATE TABLE IF NOT EXISTS todo_items (
 );
 
 CREATE INDEX IF NOT EXISTS todo_items_user_active_created_idx
-    ON todo_items (user_registered_id, created_at, todo_id)
+    ON todo_items (user_id, created_at, todo_id)
     WHERE deleted_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS todo_items_user_completed_idx
-    ON todo_items (user_registered_id, completed);
+    ON todo_items (user_id, completed);

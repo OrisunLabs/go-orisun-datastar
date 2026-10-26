@@ -11,9 +11,9 @@ import (
 )
 
 type ReopenTodoCommand struct {
-	UserRegisteredID string
-	TodoID           string
-	Metadata         CommandMetadata
+	UserID   string
+	TodoID   string
+	Metadata CommandMetadata
 }
 
 type ReopenTodoResult struct {
@@ -21,11 +21,11 @@ type ReopenTodoResult struct {
 	Skipped        bool
 }
 
-func ReopenTodoCommandHandler(ctx context.Context, command ReopenTodoCommand, saver eventstore.Saver, retriever eventstore.Retriever) (ReopenTodoResult, error) {
+func ReopenTodoCommandHandler(ctx context.Context, command ReopenTodoCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (ReopenTodoResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return ReopenTodoResult{}, err
 	}
-	model, err := loadReopenTodoContext(ctx, retriever, command.TodoID, command.UserRegisteredID)
+	model, err := loadReopenTodoContext(ctx, retriever, command.TodoID, command.UserID)
 	if err != nil {
 		return ReopenTodoResult{}, err
 	}
@@ -37,9 +37,12 @@ func ReopenTodoCommandHandler(ctx context.Context, command ReopenTodoCommand, sa
 	}
 
 	eventID := uuidv7.NewString()
-	event := NewTodoReopenedEvent(eventID, command.TodoID, command.UserRegisteredID, time.Now(), nil)
+	event, err := NewTodoReopenedEvent(eventID, command.TodoID, command.UserID, time.Now(), nil)
+	if err != nil {
+		return ReopenTodoResult{}, err
+	}
 
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return ReopenTodoResult{}, err
 	}
 	return ReopenTodoResult{TodoReopenedID: eventID}, nil
@@ -50,21 +53,30 @@ type reopenTodoContext struct {
 	deleted   bool
 	completed bool
 	position  eventstore.Position
-	events    []eventstore.ResolvedEvent
 	query     eventstore.Query
 }
 
-func loadReopenTodoContext(ctx context.Context, retriever eventstore.Retriever, todoID, userRegisteredID string) (*reopenTodoContext, error) {
-	query := streamQuery(todoID, userRegisteredID)
+func loadReopenTodoContext(ctx context.Context, retriever eventstore.LatestRetriever, todoID, userID string) (*reopenTodoContext, error) {
+	if !canonicalID(todoID) || !canonicalID(userID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	query := reopenTodoStreamQuery(todoID, userID)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
 
-	model := &reopenTodoContext{position: latest.ContextPosition, events: events, query: query}
+	model := &reopenTodoContext{position: latest.ContextPosition, query: query}
 	for _, event := range events {
-		model.handle(event)
+		facts, err := decodeTodoEvent(event.Event)
+		if err != nil {
+			return nil, err
+		}
+		if facts.todoID != todoID || facts.userID != userID {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		model.handle(event, facts)
 	}
 	return model, nil
 }
@@ -76,7 +88,7 @@ func (m *reopenTodoContext) requireActive() error {
 	return nil
 }
 
-func (m *reopenTodoContext) handle(resolved eventstore.ResolvedEvent) {
+func (m *reopenTodoContext) handle(resolved eventstore.ResolvedEvent, facts decodedTodoEvent) {
 	switch resolved.Event.EventType {
 	case TodoCreated:
 		m.exists = true
@@ -89,7 +101,20 @@ func (m *reopenTodoContext) handle(resolved eventstore.ResolvedEvent) {
 	case TodoDeleted:
 		m.deleted = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func reopenTodoStreamQuery(todoID, userID string) eventstore.Query {
+	criteria := make([]eventstore.Criterion, 0, 5)
+	for _, eventType := range []string{TodoCreated, TodoRenamed, TodoCompleted, TodoReopened, TodoDeleted} {
+		idField := TodoScopeIDField
+		if eventType == TodoCreated {
+			idField = TodoCreatedIDField
+		}
+		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{
+			{Key: eventstore.EventTypeField, Value: eventType},
+			{Key: idField, Value: todoID},
+			{Key: TodoUserIDField, Value: userID},
+		}})
 	}
+	return eventstore.Query{Criteria: criteria}
 }

@@ -286,3 +286,13 @@ func normalizePiiForBlindIndex(value string) string {
 	}
 	return whitespace.ReplaceAllString(normalized, " ")
 }
+
+// DecryptEventStringWithDataKey rejects malformed encrypted values and returns
+// authentication failures to the caller instead of panicking during replay.
+func DecryptEventStringWithDataKey(protector *Protector, subject SubjectDataKey, data map[string]any, field string) (string, error) {
+	protected, ok := FromEventValue(data[field])
+	if !ok {
+		return "", fmt.Errorf("invalid protected field %s", field)
+	}
+	return protector.DecryptWithDataKey(protected, subject)
+}

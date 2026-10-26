@@ -15,10 +15,10 @@ type ReadModelEventHandler struct {
 	global    *eventstore.GlobalEventHandler
 	readModel *ReadModel
 	publisher eventstore.Publisher
-	keys      auth.SubjectPiiKeyPort
+	keys      SubjectDataKeyReader
 }
 
-func NewReadModelEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, readModel *ReadModel, publisher eventstore.Publisher, keys auth.SubjectPiiKeyPort, logger *slog.Logger) (*ReadModelEventHandler, error) {
+func NewReadModelEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, readModel *ReadModel, publisher eventstore.Publisher, keys SubjectDataKeyReader, logger *slog.Logger) (*ReadModelEventHandler, error) {
 	handler := &ReadModelEventHandler{readModel: readModel, publisher: publisher, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
@@ -45,40 +45,55 @@ func (h *ReadModelEventHandler) StopSubscribing() {
 }
 
 func (h *ReadModelEventHandler) handle(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	var userRegisteredID string
+	var userID string
 	switch resolved.Event.EventType {
 	case userRegistered:
-		userRegisteredID, _ = resolved.Event.Data[auth.UserRegisteredIDField].(string)
+		if _, err := auth.DecodeUserRegisteredEvent(resolved.Event); err != nil {
+			return err
+		}
+		userID, _ = resolved.Event.Data[auth.UserRegisteredIDField].(string)
 		if err := h.readModel.UpsertRegisteredUser(ctx, resolved, h.keys); err != nil {
 			return err
 		}
 	case userNameChanged:
-		userRegisteredID, _ = eventstore.Scope(resolved.Event.Data)[auth.ScopeUserRegisteredIDKey].(string)
+		if _, err := auth.DecodeUserNameChangedEvent(resolved.Event); err != nil {
+			return err
+		}
+		userID, _ = eventstore.Scopes(resolved.Event.Data)[auth.ScopeUserRegisteredIDKey].(string)
 		if err := h.readModel.UpdateName(ctx, resolved, h.keys); err != nil {
 			return err
 		}
 	case ProfileBioUpdated:
-		userRegisteredID, _ = eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
+		var err error
+		userID, err = profileEventUserID(resolved.Event)
+		if err != nil {
+			return err
+		}
 		if err := h.readModel.UpdateBio(ctx, resolved, h.keys); err != nil {
 			return err
 		}
 	case ProfileImageUploaded:
-		userRegisteredID, _ = eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
+		var err error
+		userID, err = profileEventUserID(resolved.Event)
+		if err != nil {
+			return err
+		}
 		if err := h.readModel.UpdateImage(ctx, resolved); err != nil {
 			return err
 		}
 	case ProfileHeaderImageUploaded:
-		userRegisteredID, _ = eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
+		var err error
+		userID, err = profileEventUserID(resolved.Event)
+		if err != nil {
+			return err
+		}
 		if err := h.readModel.UpdateHeaderImage(ctx, resolved); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unhandled profile read model event type %q", resolved.Event.EventType)
 	}
-	if userRegisteredID == "" {
-		return nil
-	}
-	return h.publisher.Publish(ctx, Channel(userRegisteredID), map[string]string{"userRegisteredId": userRegisteredID})
+	return h.publisher.Publish(ctx, Channel(userID), map[string]string{"userId": userID})
 }
 
 func readModelEventHandlerQuery() eventstore.Query {
@@ -91,7 +106,7 @@ func readModelEventHandlerQuery() eventstore.Query {
 	}
 	criteria := make([]eventstore.Criterion, 0, len(eventTypes))
 	for _, eventType := range eventTypes {
-		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{{Key: "eventType", Value: eventType}}})
+		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: eventType}}})
 	}
 	return eventstore.Query{Criteria: criteria}
 }

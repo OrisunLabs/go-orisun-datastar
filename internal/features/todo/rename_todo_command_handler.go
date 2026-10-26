@@ -11,10 +11,10 @@ import (
 )
 
 type RenameTodoCommand struct {
-	UserRegisteredID string
-	TodoID           string
-	Title            string
-	Metadata         CommandMetadata
+	UserID   string
+	TodoID   string
+	Title    string
+	Metadata CommandMetadata
 }
 
 type RenameTodoResult struct {
@@ -22,7 +22,7 @@ type RenameTodoResult struct {
 	Skipped       bool
 }
 
-func RenameTodoCommandHandler(ctx context.Context, command RenameTodoCommand, saver eventstore.Saver, retriever eventstore.Retriever) (RenameTodoResult, error) {
+func RenameTodoCommandHandler(ctx context.Context, command RenameTodoCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (RenameTodoResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return RenameTodoResult{}, err
 	}
@@ -31,7 +31,7 @@ func RenameTodoCommandHandler(ctx context.Context, command RenameTodoCommand, sa
 		return RenameTodoResult{}, err
 	}
 
-	model, err := loadRenameTodoContext(ctx, retriever, command.TodoID, command.UserRegisteredID)
+	model, err := loadRenameTodoContext(ctx, retriever, command.TodoID, command.UserID)
 	if err != nil {
 		return RenameTodoResult{}, err
 	}
@@ -43,9 +43,12 @@ func RenameTodoCommandHandler(ctx context.Context, command RenameTodoCommand, sa
 	}
 
 	eventID := uuidv7.NewString()
-	event := NewTodoRenamedEvent(eventID, command.TodoID, command.UserRegisteredID, title, time.Now(), nil)
+	event, err := NewTodoRenamedEvent(eventID, command.TodoID, command.UserID, title, time.Now(), nil)
+	if err != nil {
+		return RenameTodoResult{}, err
+	}
 
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return RenameTodoResult{}, err
 	}
 	return RenameTodoResult{TodoRenamedID: eventID}, nil
@@ -56,21 +59,30 @@ type renameTodoContext struct {
 	deleted  bool
 	title    string
 	position eventstore.Position
-	events   []eventstore.ResolvedEvent
 	query    eventstore.Query
 }
 
-func loadRenameTodoContext(ctx context.Context, retriever eventstore.Retriever, todoID, userRegisteredID string) (*renameTodoContext, error) {
-	query := streamQuery(todoID, userRegisteredID)
+func loadRenameTodoContext(ctx context.Context, retriever eventstore.LatestRetriever, todoID, userID string) (*renameTodoContext, error) {
+	if !canonicalID(todoID) || !canonicalID(userID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	query := renameTodoStreamQuery(todoID, userID)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
 
-	model := &renameTodoContext{position: latest.ContextPosition, events: events, query: query}
+	model := &renameTodoContext{position: latest.ContextPosition, query: query}
 	for _, event := range events {
-		model.handle(event)
+		facts, err := decodeTodoEvent(event.Event)
+		if err != nil {
+			return nil, err
+		}
+		if facts.todoID != todoID || facts.userID != userID {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		model.handle(event, facts)
 	}
 	return model, nil
 }
@@ -82,19 +94,31 @@ func (m *renameTodoContext) requireActive() error {
 	return nil
 }
 
-func (m *renameTodoContext) handle(resolved eventstore.ResolvedEvent) {
-	data := resolved.Event.Data
+func (m *renameTodoContext) handle(resolved eventstore.ResolvedEvent, facts decodedTodoEvent) {
 	switch resolved.Event.EventType {
 	case TodoCreated:
 		m.exists = true
 		m.deleted = false
-		m.title, _ = data[TodoTitleField].(string)
+		m.title = facts.title
 	case TodoRenamed:
-		m.title, _ = data[TodoTitleField].(string)
+		m.title = facts.title
 	case TodoDeleted:
 		m.deleted = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func renameTodoStreamQuery(todoID, userID string) eventstore.Query {
+	criteria := make([]eventstore.Criterion, 0, 5)
+	for _, eventType := range []string{TodoCreated, TodoRenamed, TodoCompleted, TodoReopened, TodoDeleted} {
+		idField := TodoScopeIDField
+		if eventType == TodoCreated {
+			idField = TodoCreatedIDField
+		}
+		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{
+			{Key: eventstore.EventTypeField, Value: eventType},
+			{Key: idField, Value: todoID},
+			{Key: TodoUserIDField, Value: userID},
+		}})
 	}
+	return eventstore.Query{Criteria: criteria}
 }

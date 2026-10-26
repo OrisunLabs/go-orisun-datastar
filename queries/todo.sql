@@ -1,13 +1,13 @@
 -- name: ListTodos :many
 SELECT todo_id, title, completed, created_at, updated_at
 FROM todo_items
-WHERE user_registered_id = @user_registered_id
+WHERE user_id = @user_id
   AND deleted_at IS NULL
 ORDER BY created_at DESC, todo_id DESC;
 
 -- name: InsertCreatedTodo :exec
-INSERT INTO todo_items (todo_id, user_registered_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
-VALUES (@todo_id, @user_registered_id, @title, false, null, null, @last_event_commit_position, @last_event_prepare_position, @created_at, @created_at)
+INSERT INTO todo_items (todo_id, user_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
+VALUES (@todo_id, @user_id, @title, false, null, null, @last_event_commit_position, @last_event_prepare_position, @created_at, @created_at)
 ON CONFLICT (todo_id) DO NOTHING;
 
 -- name: RenameTodo :exec
@@ -44,6 +44,6 @@ SET deleted_at = @deleted_at,
     updated_at = @deleted_at
 WHERE todo_id = @todo_id;
 
--- name: DeleteTodosByRegisteredID :exec
+-- name: DeleteTodosByUserID :exec
 DELETE FROM todo_items
-WHERE user_registered_id = @user_registered_id;
+WHERE user_id = @user_id;

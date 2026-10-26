@@ -45,7 +45,7 @@ func (s *AccountDataDeletionStore) DeleteAccountData(ctx context.Context, userRe
 	if err := queries.DeleteProfileByRegisteredID(ctx, userRegisteredID); err != nil {
 		return err
 	}
-	if err := queries.DeleteTodosByRegisteredID(ctx, userRegisteredID); err != nil {
+	if err := queries.DeleteTodosByUserID(ctx, userRegisteredID); err != nil {
 		return err
 	}
 	if err := queries.DeleteAuthUserByRegisteredID(ctx, userRegisteredID); err != nil {

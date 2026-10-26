@@ -12,13 +12,13 @@ const PasswordResetEmailToBeSentEventHandlerName = "todo_password_reset_email_to
 type PasswordResetEmailToBeSentEventHandler struct {
 	global    *eventstore.GlobalEventHandler
 	retriever eventstore.Retriever
-	saver     eventstore.Saver
+	saver     eventstore.SaverV2
 	sender    EmailSender
 	appURL    string
 	keys      SubjectPiiKeyPort
 }
 
-func NewPasswordResetEmailToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.Saver, sender EmailSender, appURL string, keys SubjectPiiKeyPort, logger *slog.Logger) (*PasswordResetEmailToBeSentEventHandler, error) {
+func NewPasswordResetEmailToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, appURL string, keys SubjectPiiKeyPort, logger *slog.Logger) (*PasswordResetEmailToBeSentEventHandler, error) {
 	handler := &PasswordResetEmailToBeSentEventHandler{retriever: retriever, saver: saver, sender: sender, appURL: appURL, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
@@ -48,6 +48,9 @@ func (h *PasswordResetEmailToBeSentEventHandler) handle(ctx context.Context, res
 	if resolved.Event.EventType != PasswordResetRequested {
 		return nil
 	}
+	if err := ValidateEvent(resolved.Event); err != nil {
+		return err
+	}
 	requestID, _ := resolved.Event.Data[PasswordResetRequestedIDField].(string)
 	return SendPasswordResetEmailCommandHandler(ctx, SendPasswordResetEmailCommand{
 		PasswordResetRequestedID: requestID,
@@ -56,5 +59,5 @@ func (h *PasswordResetEmailToBeSentEventHandler) handle(ctx context.Context, res
 }
 
 func passwordResetEmailToBeSentEventHandlerQuery() eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: "eventType", Value: PasswordResetRequested}}}}}
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetRequested}}}}}
 }

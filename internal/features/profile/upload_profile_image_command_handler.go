@@ -7,15 +7,15 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 type UploadProfileImageCommand struct {
-	User        views.User
+	UserID      string
 	Data        []byte
 	ContentType string
 	Header      bool
@@ -26,7 +26,7 @@ type UploadProfileImageResult struct {
 	URL string
 }
 
-func UploadProfileImageCommandHandler(ctx context.Context, command UploadProfileImageCommand, saver eventstore.Saver, retriever eventstore.Retriever, storage ObjectStore) (UploadProfileImageResult, error) {
+func UploadProfileImageCommandHandler(ctx context.Context, command UploadProfileImageCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, storage ObjectStore) (UploadProfileImageResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return UploadProfileImageResult{}, err
 	}
@@ -34,15 +34,21 @@ func UploadProfileImageCommandHandler(ctx context.Context, command UploadProfile
 	if err != nil {
 		return UploadProfileImageResult{}, err
 	}
+	url := storage.PublicURL(model.key)
+	var event eventstore.DomainEvent
+	if command.Header {
+		event, err = NewProfileHeaderImageUploadedEvent(model.eventID, url, time.Now(), command.UserID, nil)
+	} else {
+		event, err = NewProfileImageUploadedEvent(model.eventID, url, time.Now(), command.UserID, nil)
+	}
+	if err != nil {
+		return UploadProfileImageResult{}, err
+	}
 	if err := storage.PutObject(ctx, model.key, command.Data, command.ContentType); err != nil {
 		return UploadProfileImageResult{}, err
 	}
-	url := storage.PublicURL(model.key)
-	event := NewProfileImageUploadedEvent(model.eventID, url, time.Now(), command.User.UserRegisteredID, nil)
-	if command.Header {
-		event = NewProfileHeaderImageUploadedEvent(model.eventID, url, time.Now(), command.User.UserRegisteredID, nil)
-	}
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return UploadProfileImageResult{}, err
 	}
 	return UploadProfileImageResult{URL: url}, nil
@@ -57,7 +63,10 @@ type uploadProfileImageContext struct {
 	query      eventstore.Query
 }
 
-func loadUploadProfileImageContext(ctx context.Context, command UploadProfileImageCommand, retriever eventstore.Retriever) (*uploadProfileImageContext, error) {
+func loadUploadProfileImageContext(ctx context.Context, command UploadProfileImageCommand, retriever eventstore.LatestRetriever) (*uploadProfileImageContext, error) {
+	if !validProfileID(command.UserID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
 	if len(command.Data) == 0 {
 		return nil, errors.New("missing image")
 	}
@@ -71,10 +80,10 @@ func loadUploadProfileImageContext(ctx context.Context, command UploadProfileIma
 		kind = "header"
 		eventType = ProfileHeaderImageUploaded
 	}
-	userQuery := registeredUserQuery(command.User.UserRegisteredID)
-	imageQuery := profileUserEventQuery(eventType, command.User.UserRegisteredID)
-	query := combineQueries(userQuery, imageQuery)
-	key := filepath.ToSlash(fmt.Sprintf("profiles/%s/%s-%s.%s", command.User.UserRegisteredID, kind, uuidv7.NewString(), ext))
+	userQuery := uploadProfileImageRegisteredUserQuery(command.UserID)
+	imageQuery := uploadProfileImageProfileUserEventQuery(eventType, command.UserID)
+	query := uploadProfileImageCombineQueries(userQuery, imageQuery)
+	key := filepath.ToSlash(fmt.Sprintf("profiles/%s/%s-%s.%s", command.UserID, kind, uuidv7.NewString(), ext))
 	eventID := uuidv7.NewString()
 	model := &uploadProfileImageContext{
 		key:      key,
@@ -89,6 +98,20 @@ func loadUploadProfileImageContext(ctx context.Context, command UploadProfileIma
 	model.events = eventstore.EventsFromLatest(latest.Results)
 	model.position = latest.ContextPosition
 	for _, event := range model.events {
+		if event.Event.EventType == auth.UserRegistered {
+			if _, err := auth.DecodeUserRegisteredEvent(event.Event); err != nil {
+				return nil, err
+			}
+		}
+		if event.Event.EventType != auth.UserRegistered {
+			userID, err := profileEventUserID(event.Event)
+			if err != nil {
+				return nil, err
+			}
+			if userID != command.UserID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+		}
 		model.handle(event)
 	}
 	if !model.userExists {
@@ -102,7 +125,26 @@ func (m *uploadProfileImageContext) handle(resolved eventstore.ResolvedEvent) {
 	case "UserRegistered":
 		m.userExists = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func uploadProfileImageCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func uploadProfileImageProfileUserEventQuery(eventType, userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: eventType},
+		{Key: ProfileUserIDField, Value: userRegisteredID},
+	}}}}
+}
+
+func uploadProfileImageRegisteredUserQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: auth.UserRegistered},
+		{Key: auth.UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
 }

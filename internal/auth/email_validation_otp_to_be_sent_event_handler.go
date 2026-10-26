@@ -12,12 +12,12 @@ const EmailValidationOTPToBeSentEventHandlerName = "todo_email_validation_otp_to
 type EmailValidationOTPToBeSentEventHandler struct {
 	global    *eventstore.GlobalEventHandler
 	retriever eventstore.Retriever
-	saver     eventstore.Saver
+	saver     eventstore.SaverV2
 	sender    EmailSender
 	keys      SubjectPiiKeyPort
 }
 
-func NewEmailValidationOTPToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.Saver, sender EmailSender, keys SubjectPiiKeyPort, logger *slog.Logger) (*EmailValidationOTPToBeSentEventHandler, error) {
+func NewEmailValidationOTPToBeSentEventHandler(subscriber eventstore.Subscriber, checkpointer eventstore.Checkpointer, retriever eventstore.Retriever, saver eventstore.SaverV2, sender EmailSender, keys SubjectPiiKeyPort, logger *slog.Logger) (*EmailValidationOTPToBeSentEventHandler, error) {
 	handler := &EmailValidationOTPToBeSentEventHandler{retriever: retriever, saver: saver, sender: sender, keys: keys}
 	global, err := eventstore.NewGlobalEventHandler(eventstore.GlobalEventHandlerConfig{
 		Subscriber:      subscriber,
@@ -47,8 +47,11 @@ func (h *EmailValidationOTPToBeSentEventHandler) handle(ctx context.Context, res
 	if resolved.Event.EventType != EmailVerificationOTPGenerated {
 		return nil
 	}
+	if err := ValidateEvent(resolved.Event); err != nil {
+		return err
+	}
 	otpID, _ := resolved.Event.Data[EmailVerificationOTPGeneratedIDField].(string)
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ScopeUserRegisteredIDKey].(string)
+	userRegisteredID, _ := eventstore.Scopes(resolved.Event.Data)[ScopeUserRegisteredIDKey].(string)
 	return SendEmailValidationOTPCommandHandler(ctx, SendEmailValidationOTPCommand{
 		UserRegisteredID:                userRegisteredID,
 		EmailVerificationOTPGeneratedID: otpID,
@@ -57,5 +60,5 @@ func (h *EmailValidationOTPToBeSentEventHandler) handle(ctx context.Context, res
 }
 
 func emailValidationOTPToBeSentEventHandlerQuery() eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: "eventType", Value: EmailVerificationOTPGenerated}}}}}
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated}}}}}
 }

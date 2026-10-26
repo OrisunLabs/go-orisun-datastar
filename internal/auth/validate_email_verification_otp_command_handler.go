@@ -18,7 +18,7 @@ type ValidateEmailVerificationOTPCommand struct {
 	Metadata CommandMetadata
 }
 
-func ValidateEmailVerificationOTPCommandHandler(ctx context.Context, command ValidateEmailVerificationOTPCommand, saver eventstore.Saver, retriever eventstore.Retriever) error {
+func ValidateEmailVerificationOTPCommandHandler(ctx context.Context, command ValidateEmailVerificationOTPCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
@@ -40,8 +40,11 @@ func ValidateEmailVerificationOTPCommandHandler(ctx context.Context, command Val
 	}
 
 	validationID := uuidv7.NewString()
-	event := NewEmailVerificationOTPValidatedEvent(validationID, time.Now(), model.otpID, command.User.UserRegisteredID, nil)
-	_, err = eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query)
+	event, err := NewEmailVerificationOTPValidatedEvent(validationID, time.Now(), model.otpID, command.User.UserRegisteredID, nil)
+	if err != nil {
+		return err
+	}
+	_, err = eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.consistency)
 	return err
 }
 
@@ -51,9 +54,7 @@ type validateEmailVerificationOTPContext struct {
 	code             string
 	expiresAt        time.Time
 	alreadyValidated bool
-	position         eventstore.Position
-	events           []eventstore.ResolvedEvent
-	query            eventstore.Query
+	consistency      []eventstore.ConsistencyObservation
 }
 
 type latestOTP struct {
@@ -82,48 +83,43 @@ func latestEmailVerificationOTP(events []eventstore.ResolvedEvent) latestOTP {
 	return otp
 }
 
-func loadValidateEmailVerificationOTPContext(ctx context.Context, command ValidateEmailVerificationOTPCommand, retriever eventstore.Retriever) (*validateEmailVerificationOTPContext, error) {
-	generatedQuery := emailVerificationOTPGeneratedByUserQuery(command.User.UserRegisteredID)
-	userQuery := userRegisteredQuery(command.User.UserRegisteredID)
+func loadValidateEmailVerificationOTPContext(ctx context.Context, command ValidateEmailVerificationOTPCommand, retriever eventstore.LatestRetriever) (*validateEmailVerificationOTPContext, error) {
+	generatedQuery := validateEmailVerificationOTPEmailVerificationOTPGeneratedByUserQuery(command.User.UserRegisteredID)
+	userQuery := validateEmailVerificationOTPUserRegisteredQuery(command.User.UserRegisteredID)
 
-	var (
-		events     []eventstore.ResolvedEvent
-		allFetched []eventstore.ResolvedEvent
-		latest     eventstore.LatestByCriteriaResult
-		otp        latestOTP
-		query      eventstore.Query
-		otpID      string
-		stable     bool
-	)
-	for range 5 {
-		validationQuery := emailVerificationOTPValidatedQuery(otpID)
-		query = combineQueries(generatedQuery, validationQuery, userQuery)
-		var err error
-		latest, err = retriever.GetLatestByCriteria(ctx, query.Criteria)
+	query := validateEmailVerificationOTPCombineQueries(generatedQuery, userQuery)
+	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
+	if err != nil {
+		return nil, err
+	}
+	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
+	otp := latestEmailVerificationOTP(events)
+	model := &validateEmailVerificationOTPContext{
+		otpID: otp.id, code: otp.code, expiresAt: otp.expiresAt,
+		consistency: []eventstore.ConsistencyObservation{{Query: query, Position: latest.ContextPosition}},
+	}
+	// Only the validation criterion depends on the first response. Preserve both
+	// observations; a concurrent replacement OTP invalidates the first guard.
+	if otp.id != "" {
+		validationQuery := validateEmailVerificationOTPEmailVerificationOTPValidatedQuery(otp.id)
+		validation, err := retriever.GetLatestByCriteria(ctx, validationQuery.Criteria)
 		if err != nil {
 			return nil, err
 		}
-		events = eventstore.EventsFromLatest(latest.Results)
-		allFetched = append(allFetched, events...)
-		otp = latestEmailVerificationOTP(events)
-		if otp.id == otpID || otp.id == "" {
-			stable = true
-			break
+		model.consistency = append(model.consistency, eventstore.ConsistencyObservation{Query: validationQuery, Position: validation.ContextPosition})
+		for _, checked := range eventstore.EventsFromLatest(validation.Results) {
+			if err := ValidateEvent(checked.Event); err != nil {
+				return nil, err
+			}
+			events = append(events, checked)
 		}
-		otpID = otp.id
-	}
-	if !stable {
-		return nil, eventstore.ErrConflict
 	}
 
-	model := &validateEmailVerificationOTPContext{
-		otpID:     otp.id,
-		code:      otp.code,
-		expiresAt: otp.expiresAt,
-		position:  latest.ContextPosition,
-		events:    allFetched,
-		query:     query,
-	}
 	for _, event := range events {
 		model.handle(event)
 	}
@@ -137,7 +133,33 @@ func (m *validateEmailVerificationOTPContext) handle(resolved eventstore.Resolve
 	case EmailVerificationOTPValidated:
 		m.alreadyValidated = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func validateEmailVerificationOTPCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func validateEmailVerificationOTPEmailVerificationOTPGeneratedByUserQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated},
+		{Key: ScopeUserRegisteredIDField, Value: userRegisteredID},
+	}}}}
+}
+
+func validateEmailVerificationOTPEmailVerificationOTPValidatedQuery(otpID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: EmailVerificationOTPValidated},
+		{Key: ScopeEmailVerificationOTPGeneratedIDField, Value: otpID},
+	}}}}
+}
+
+func validateEmailVerificationOTPUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserRegistered},
+		{Key: UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
 }

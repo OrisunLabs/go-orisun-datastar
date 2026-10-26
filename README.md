@@ -144,3 +144,9 @@ task sqlc
 task templ
 task css
 ```
+
+## Backend patterns
+
+Commands use narrow ports, bounded latest-event context reads and one `SaveCommandEventsV2` append preserving every independently checked query and position. Orisun owns persisted write contexts; domain ancestry is separate from consistency metadata. Stateful command tests use real in-memory Orisun SQLite through `internal/eventstoretest` even on this PostgreSQL branch.
+
+See [backend architecture patterns and remaining conversions](docs/backend-patterns.md). Existing NATS KV view-state remains supported.

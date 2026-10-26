@@ -30,7 +30,7 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			EventTypes: []string{auth.EmailVerificationOTPGenerated},
 		},
 		{
-			Name:       "scope_email_otp_generated_id",
+			Name:       "otp_ancestry",
 			Fields:     []string{auth.ScopeEmailVerificationOTPGeneratedIDField},
 			EventTypes: []string{auth.EmailVerificationOTPValidated, auth.EmailVerificationOTPSent},
 		},
@@ -40,12 +40,12 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			EventTypes: []string{auth.PasswordResetRequested},
 		},
 		{
-			Name:       "scope_password_reset_requested_id",
+			Name:       "reset_ancestry",
 			Fields:     []string{auth.ScopePasswordResetRequestedIDField},
 			EventTypes: []string{auth.PasswordResetEmailSent, auth.PasswordResetCompleted},
 		},
 		{
-			Name:   "scope_user_registered_id",
+			Name:   "auth_user_ancestry",
 			Fields: []string{auth.ScopeUserRegisteredIDField},
 			EventTypes: []string{
 				auth.UserNameChanged,
@@ -56,20 +56,22 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 				auth.PasswordChanged,
 				auth.AccountDeletionRequested,
 				auth.AccountDeleted,
-				profile.ProfileImageUploaded,
-				profile.ProfileHeaderImageUploaded,
-				profile.ProfileBioUpdated,
-				todo.TodoCreated,
-				todo.TodoRenamed,
-				todo.TodoCompleted,
-				todo.TodoReopened,
-				todo.TodoDeleted,
 			},
 		},
 		{
-			Name:       "todo_scope",
-			Fields:     []string{todo.TodoScopeIDField, todo.TodoScopeUserRegisteredIDField},
-			EventTypes: []string{todo.TodoCreated, todo.TodoRenamed, todo.TodoCompleted, todo.TodoReopened, todo.TodoDeleted},
+			Name:       "profile_owner",
+			Fields:     []string{profile.ProfileUserIDField},
+			EventTypes: []string{profile.ProfileImageUploaded, profile.ProfileHeaderImageUploaded, profile.ProfileBioUpdated},
+		},
+		{
+			Name:       "todo_created",
+			Fields:     []string{todo.TodoCreatedIDField, todo.TodoUserIDField},
+			EventTypes: []string{todo.TodoCreated},
+		},
+		{
+			Name:       "todo_ancestry",
+			Fields:     []string{todo.TodoScopeIDField, todo.TodoUserIDField},
+			EventTypes: []string{todo.TodoRenamed, todo.TodoCompleted, todo.TodoReopened, todo.TodoDeleted},
 		},
 		{
 			Name:       "account_deletion_requested_id",
@@ -77,8 +79,8 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			EventTypes: []string{auth.AccountDeletionRequested},
 		},
 		{
-			Name:       "scope_account_deletion_requested_id",
-			Fields:     []string{"scope.accountDeletionRequestedId"},
+			Name:       "deletion_ancestry",
+			Fields:     []string{"scopes.accountDeletionRequestedId"},
 			EventTypes: []string{auth.AccountDeleted},
 		},
 		{
@@ -97,7 +99,7 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			EventTypes: []string{auth.LoginAttemptRecorded},
 		},
 		{
-			Name:       "login_attempt_user_registered_id",
+			Name:       "login_user",
 			Fields:     []string{auth.LoginAttemptUserRegisteredIDField},
 			EventTypes: []string{auth.LoginAttemptRecorded},
 		},

@@ -11,16 +11,16 @@ import (
 )
 
 type CreateTodoCommand struct {
-	UserRegisteredID string
-	Title            string
-	Metadata         CommandMetadata
+	UserID   string
+	Title    string
+	Metadata CommandMetadata
 }
 
 type CreateTodoResult struct {
 	TodoID string
 }
 
-func CreateTodoCommandHandler(ctx context.Context, command CreateTodoCommand, saver eventstore.Saver) (CreateTodoResult, error) {
+func CreateTodoCommandHandler(ctx context.Context, command CreateTodoCommand, saver eventstore.SaverV2) (CreateTodoResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return CreateTodoResult{}, err
 	}
@@ -29,9 +29,12 @@ func CreateTodoCommandHandler(ctx context.Context, command CreateTodoCommand, sa
 		return CreateTodoResult{}, err
 	}
 
-	event := NewTodoCreatedEvent(model.todoID, command.UserRegisteredID, model.title, time.Now(), nil)
+	event, err := NewTodoCreatedEvent(model.todoID, command.UserID, model.title, time.Now(), nil)
+	if err != nil {
+		return CreateTodoResult{}, err
+	}
 
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, eventstore.NoEventPosition, nil, model.query); err != nil {
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: eventstore.NoEventPosition}}); err != nil {
 		return CreateTodoResult{}, err
 	}
 	return CreateTodoResult{TodoID: model.todoID}, nil
@@ -52,6 +55,22 @@ func newCreateTodoContext(command CreateTodoCommand) (*createTodoContext, error)
 	return &createTodoContext{
 		todoID: todoID,
 		title:  title,
-		query:  streamQuery(todoID, command.UserRegisteredID),
+		query:  createTodoStreamQuery(todoID, command.UserID),
 	}, nil
+}
+
+func createTodoStreamQuery(todoID, userID string) eventstore.Query {
+	criteria := make([]eventstore.Criterion, 0, 5)
+	for _, eventType := range []string{TodoCreated, TodoRenamed, TodoCompleted, TodoReopened, TodoDeleted} {
+		idField := TodoScopeIDField
+		if eventType == TodoCreated {
+			idField = TodoCreatedIDField
+		}
+		criteria = append(criteria, eventstore.Criterion{Tags: []eventstore.Tag{
+			{Key: eventstore.EventTypeField, Value: eventType},
+			{Key: idField, Value: todoID},
+			{Key: TodoUserIDField, Value: userID},
+		}})
+	}
+	return eventstore.Query{Criteria: criteria}
 }

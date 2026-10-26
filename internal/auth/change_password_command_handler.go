@@ -19,11 +19,7 @@ type ChangePasswordCommand struct {
 	Metadata        CommandMetadata
 }
 
-type PasswordCredentialReader interface {
-	UserByEmailWithPassword(ctx context.Context, emailAddress string) (views.User, string, error)
-}
-
-func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCommand, credentials PasswordCredentialReader, saver eventstore.Saver, retriever eventstore.Retriever) error {
+func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCommand, credentials PasswordCredentialReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
@@ -50,8 +46,11 @@ func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCom
 	}
 
 	eventID := uuidv7.NewString()
-	event := NewPasswordChangedEvent(eventID, time.Now(), command.User.UserRegisteredID, string(newHash), nil)
-	_, err = eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query)
+	event, err := NewPasswordChangedEvent(eventID, time.Now(), command.User.UserRegisteredID, string(newHash), nil)
+	if err != nil {
+		return err
+	}
+	_, err = eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}})
 	return err
 }
 
@@ -62,15 +61,20 @@ type changePasswordContext struct {
 	query      eventstore.Query
 }
 
-func loadChangePasswordContext(ctx context.Context, command ChangePasswordCommand, retriever eventstore.Retriever) (*changePasswordContext, error) {
-	userQuery := userRegisteredQuery(command.User.UserRegisteredID)
-	passwordQuery := passwordChangedByUserQuery(command.User.UserRegisteredID)
-	query := combineQueries(userQuery, passwordQuery)
+func loadChangePasswordContext(ctx context.Context, command ChangePasswordCommand, retriever eventstore.LatestRetriever) (*changePasswordContext, error) {
+	userQuery := changePasswordUserRegisteredQuery(command.User.UserRegisteredID)
+	passwordQuery := changePasswordPasswordChangedByUserQuery(command.User.UserRegisteredID)
+	query := changePasswordCombineQueries(userQuery, passwordQuery)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
 	model := &changePasswordContext{position: latest.ContextPosition, events: events, query: query}
 	for _, event := range events {
 		model.handle(event)
@@ -82,7 +86,26 @@ func (m *changePasswordContext) handle(resolved eventstore.ResolvedEvent) {
 	if resolved.Event.EventType == UserRegistered {
 		m.userExists = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func changePasswordCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func changePasswordPasswordChangedByUserQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: PasswordChanged},
+		{Key: ScopeUserRegisteredIDField, Value: userRegisteredID},
+	}}}}
+}
+
+func changePasswordUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserRegistered},
+		{Key: UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
 }

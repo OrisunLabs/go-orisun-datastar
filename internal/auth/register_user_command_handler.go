@@ -31,7 +31,7 @@ type RegisterUserResult struct {
 	PasswordHash     string
 }
 
-func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand, saver eventstore.Saver, retriever eventstore.Retriever, keys SubjectPiiKeyPort) (RegisterUserResult, error) {
+func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (RegisterUserResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return RegisterUserResult{}, err
 	}
@@ -54,8 +54,11 @@ func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand
 	if err != nil {
 		return RegisterUserResult{}, err
 	}
-	event := NewUserRegisteredEvent(model.userRegisteredID, model.username, model.email, model.firstName, model.lastName, command.YearOfBirth, string(passwordHash), subjectKey, nil)
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+	event, err := NewUserRegisteredEvent(model.userRegisteredID, model.username, model.email, model.firstName, model.lastName, command.YearOfBirth, string(passwordHash), subjectKey, nil)
+	if err != nil {
+		return RegisterUserResult{}, err
+	}
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return RegisterUserResult{}, err
 	}
 	return RegisterUserResult{
@@ -83,7 +86,7 @@ type registerUserContext struct {
 	query            eventstore.Query
 }
 
-func loadRegisterUserContext(ctx context.Context, command RegisterUserCommand, retriever eventstore.Retriever) (*registerUserContext, error) {
+func loadRegisterUserContext(ctx context.Context, command RegisterUserCommand, retriever eventstore.LatestRetriever) (*registerUserContext, error) {
 	username := strings.TrimSpace(command.Username)
 	email := strings.ToLower(strings.TrimSpace(command.Email))
 	if len(username) < 4 || email == "" {
@@ -93,12 +96,17 @@ func loadRegisterUserContext(ctx context.Context, command RegisterUserCommand, r
 	protector := protectedpii.FromEnv()
 	usernameHash := protector.BlindIndex(UserRegisteredUsernameField, username)
 	emailHash := protector.BlindIndex(UserRegisteredEmailField, email)
-	query := userRegisteredByUsernameOrEmailQuery(usernameHash, emailHash)
+	query := registerUserUserRegisteredByUsernameOrEmailQuery(usernameHash, emailHash)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
 
 	model := &registerUserContext{
 		userRegisteredID: uuidv7.NewString(),
@@ -129,7 +137,17 @@ func (m *registerUserContext) handle(resolved eventstore.ResolvedEvent) {
 			m.existingEmail = true
 		}
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
-	}
+}
+
+func registerUserUserRegisteredByUsernameOrEmailQuery(usernameHash, emailHash string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{
+		{Tags: []eventstore.Tag{
+			{Key: eventstore.EventTypeField, Value: UserRegistered},
+			{Key: UserRegisteredUsernameHashField, Value: usernameHash},
+		}},
+		{Tags: []eventstore.Tag{
+			{Key: eventstore.EventTypeField, Value: UserRegistered},
+			{Key: UserRegisteredEmailHashField, Value: emailHash},
+		}},
+	}}
 }

@@ -9,15 +9,15 @@ import (
 )
 
 type CompleteAllActiveTodosCommand struct {
-	UserRegisteredID string
-	Metadata         CommandMetadata
+	UserID   string
+	Metadata CommandMetadata
 }
 
-func CompleteAllActiveTodosCommandHandler(ctx context.Context, command CompleteAllActiveTodosCommand, readModel TodoReadModelReader, saver eventstore.Saver, retriever eventstore.Retriever) error {
+func CompleteAllActiveTodosCommandHandler(ctx context.Context, command CompleteAllActiveTodosCommand, readModel TodoReadModelReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
-	model, err := loadCompleteAllActiveTodosContext(ctx, readModel, command.UserRegisteredID)
+	model, err := loadCompleteAllActiveTodosContext(ctx, readModel, command.UserID)
 	if err != nil {
 		return err
 	}
@@ -26,9 +26,9 @@ func CompleteAllActiveTodosCommandHandler(ctx context.Context, command CompleteA
 			continue
 		}
 		if _, err := CompleteTodoCommandHandler(ctx, CompleteTodoCommand{
-			UserRegisteredID: command.UserRegisteredID,
-			TodoID:           item.TodoID,
-			Metadata:         command.Metadata,
+			UserID:   command.UserID,
+			TodoID:   item.TodoID,
+			Metadata: command.Metadata,
 		}, saver, retriever); err != nil {
 			return err
 		}
@@ -40,8 +40,8 @@ type completeAllActiveTodosContext struct {
 	todos []views.Todo
 }
 
-func loadCompleteAllActiveTodosContext(ctx context.Context, readModel TodoReadModelReader, userRegisteredID string) (*completeAllActiveTodosContext, error) {
-	todos, err := readModel.List(ctx, userRegisteredID)
+func loadCompleteAllActiveTodosContext(ctx context.Context, readModel TodoReadModelReader, userID string) (*completeAllActiveTodosContext, error) {
+	todos, err := readModel.List(ctx, userID)
 	if err != nil {
 		return nil, err
 	}

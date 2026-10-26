@@ -253,7 +253,7 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "auth user projection",
 			create: func() (eventHandler, error) {
-				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, store, components.authUsers, components.verifications, components.piiKeys, logger)
+				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authUsers, components.verifications, components.piiKeys, logger)
 			},
 		},
 		{

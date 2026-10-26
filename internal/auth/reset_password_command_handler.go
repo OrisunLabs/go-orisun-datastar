@@ -21,7 +21,7 @@ type PasswordResetReader interface {
 	PasswordResetByToken(ctx context.Context, token string) (PasswordResetVerification, error)
 }
 
-func ResetPasswordCommandHandler(ctx context.Context, command ResetPasswordCommand, resets PasswordResetReader, users AuthUserByIDReader, saver eventstore.Saver, retriever eventstore.Retriever) error {
+func ResetPasswordCommandHandler(ctx context.Context, command ResetPasswordCommand, resets PasswordResetReader, users AuthUserByIDReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
@@ -52,8 +52,11 @@ func ResetPasswordCommandHandler(ctx context.Context, command ResetPasswordComma
 	}
 
 	eventID := uuidv7.NewString()
-	event := NewPasswordResetCompletedEvent(eventID, time.Now(), verification.ID, user.UserRegisteredID, string(hash), nil)
-	_, err = eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query)
+	event, err := NewPasswordResetCompletedEvent(eventID, time.Now(), verification.ID, user.UserRegisteredID, string(hash), nil)
+	if err != nil {
+		return err
+	}
+	_, err = eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}})
 	return err
 }
 
@@ -65,15 +68,20 @@ type resetPasswordContext struct {
 	query            eventstore.Query
 }
 
-func loadResetPasswordContext(ctx context.Context, passwordResetRequestedID string, retriever eventstore.Retriever) (*resetPasswordContext, error) {
-	requestedQuery := passwordResetRequestedQuery(passwordResetRequestedID)
-	completedQuery := passwordResetCompletedQuery(passwordResetRequestedID)
-	query := combineQueries(requestedQuery, completedQuery)
+func loadResetPasswordContext(ctx context.Context, passwordResetRequestedID string, retriever eventstore.LatestRetriever) (*resetPasswordContext, error) {
+	requestedQuery := resetPasswordPasswordResetRequestedQuery(passwordResetRequestedID)
+	completedQuery := resetPasswordPasswordResetCompletedQuery(passwordResetRequestedID)
+	query := resetPasswordCombineQueries(requestedQuery, completedQuery)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
 	model := &resetPasswordContext{position: latest.ContextPosition, events: events, query: query}
 	for _, event := range events {
 		model.handle(event)
@@ -88,7 +96,26 @@ func (m *resetPasswordContext) handle(resolved eventstore.ResolvedEvent) {
 	case PasswordResetCompleted:
 		m.alreadyCompleted = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+}
+
+func resetPasswordCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func resetPasswordPasswordResetCompletedQuery(requestID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: PasswordResetCompleted},
+		{Key: ScopePasswordResetRequestedIDField, Value: requestID},
+	}}}}
+}
+
+func resetPasswordPasswordResetRequestedQuery(requestID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: PasswordResetRequested},
+		{Key: PasswordResetRequestedIDField, Value: requestID},
+	}}}}
 }

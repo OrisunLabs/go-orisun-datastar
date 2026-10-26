@@ -13,15 +13,13 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 )
 
-type CommandMetadata = eventstore.CommandMetadata
-
 type SendEmailValidationOTPCommand struct {
 	UserRegisteredID                string
 	EmailVerificationOTPGeneratedID string
 	Metadata                        CommandMetadata
 }
 
-type emailValidationOTPContext struct {
+type sendEmailValidationOTPContext struct {
 	otpID       string
 	code        string
 	expiresAt   string
@@ -33,35 +31,13 @@ type emailValidationOTPContext struct {
 	query       eventstore.Query
 }
 
-func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmailValidationOTPCommand, saver eventstore.Saver, retriever eventstore.Retriever, sender EmailSender, keys SubjectPiiKeyPort) error {
+func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmailValidationOTPCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, sender EmailSender, keys SubjectPiiKeyPort) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
-	generatedQuery := emailVerificationOTPGeneratedQuery(command.EmailVerificationOTPGeneratedID)
-	userQuery := userRegisteredQuery(command.UserRegisteredID)
-	sentQuery := emailVerificationOTPSentQuery(command.EmailVerificationOTPGeneratedID)
-	query := combineQueries(generatedQuery, userQuery, sentQuery)
-	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
+	model, err := loadSendEmailValidationOTPContext(ctx, command, retriever, keys)
 	if err != nil {
 		return err
-	}
-
-	events := eventstore.EventsFromLatest(latest.Results)
-	model := emailValidationOTPContext{
-		position: latest.ContextPosition,
-		events:   events,
-		query:    query,
-	}
-	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return eventstore.ErrNotFound
-	}
-	model.subjectKey = subjectKey
-	for _, resolved := range model.events {
-		model.handle(resolved)
 	}
 	if model.alreadySent {
 		return nil
@@ -82,23 +58,95 @@ func SendEmailValidationOTPCommandHandler(ctx context.Context, command SendEmail
 	}
 
 	id := uuidv7.NewString()
-	sent := NewEmailVerificationOTPSentEvent(id, time.Now(), command.EmailVerificationOTPGeneratedID, nil)
-	_, err = eventstore.SaveCommandEvents(ctx, saver, command.Metadata, []eventstore.DomainEvent{sent}, model.position, model.events, model.query)
+	sent, err := NewEmailVerificationOTPSentEvent(id, time.Now(), command.EmailVerificationOTPGeneratedID, nil)
+	if err != nil {
+		return err
+	}
+	_, err = eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{sent}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}})
 	return err
 }
 
-func (m *emailValidationOTPContext) handle(resolved eventstore.ResolvedEvent) {
+func (m *sendEmailValidationOTPContext) handle(resolved eventstore.ResolvedEvent) error {
 	switch resolved.Event.EventType {
 	case EmailVerificationOTPGenerated:
 		m.otpID, _ = resolved.Event.Data[EmailVerificationOTPGeneratedIDField].(string)
 		m.code, _ = resolved.Event.Data[EmailVerificationOTPCodeField].(string)
 		m.expiresAt, _ = resolved.Event.Data[EmailVerificationOTPExpiresAtField].(string)
 	case UserRegistered:
-		m.email = protectedpii.MustDecryptEventStringWithDataKey(protectedpii.FromEnv(), m.subjectKey, resolved.Event.Data, UserRegisteredEmailField)
+		decryptedemail, err := protectedpii.DecryptEventStringWithDataKey(protectedpii.FromEnv(), m.subjectKey, resolved.Event.Data, UserRegisteredEmailField)
+		if err != nil {
+			return err
+		}
+		m.email = decryptedemail
 	case EmailVerificationOTPSent:
 		m.alreadySent = true
 	}
-	if resolved.Position.After(m.position) {
-		m.position = resolved.Position
+	return nil
+}
+
+func sendEmailValidationOTPCombineQueries(queries ...eventstore.Query) eventstore.Query {
+	combined := eventstore.Query{}
+	for _, query := range queries {
+		combined.Criteria = append(combined.Criteria, query.Criteria...)
 	}
+	return combined
+}
+
+func sendEmailValidationOTPEmailVerificationOTPGeneratedQuery(otpID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: EmailVerificationOTPGenerated},
+		{Key: EmailVerificationOTPGeneratedIDField, Value: otpID},
+	}}}}
+}
+
+func sendEmailValidationOTPEmailVerificationOTPSentQuery(otpID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: EmailVerificationOTPSent},
+		{Key: ScopeEmailVerificationOTPGeneratedIDField, Value: otpID},
+	}}}}
+}
+
+func sendEmailValidationOTPUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserRegistered},
+		{Key: UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
+}
+
+func loadSendEmailValidationOTPContext(ctx context.Context, command SendEmailValidationOTPCommand, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (*sendEmailValidationOTPContext, error) {
+	generatedQuery := sendEmailValidationOTPEmailVerificationOTPGeneratedQuery(command.EmailVerificationOTPGeneratedID)
+	userQuery := sendEmailValidationOTPUserRegisteredQuery(command.UserRegisteredID)
+	sentQuery := sendEmailValidationOTPEmailVerificationOTPSentQuery(command.EmailVerificationOTPGeneratedID)
+	query := sendEmailValidationOTPCombineQueries(generatedQuery, userQuery, sentQuery)
+	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
+	if err != nil {
+		return nil, err
+	}
+
+	events := eventstore.EventsFromLatest(latest.Results)
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
+		}
+	}
+	model := &sendEmailValidationOTPContext{
+		position: latest.ContextPosition,
+		events:   events,
+		query:    query,
+	}
+	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, eventstore.ErrNotFound
+	}
+	model.subjectKey = subjectKey
+	for _, resolved := range model.events {
+		if err := model.handle(resolved); err != nil {
+			return nil, err
+		}
+	}
+
+	return model, nil
 }

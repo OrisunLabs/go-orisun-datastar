@@ -26,7 +26,7 @@ type PasswordResetUserReader interface {
 	UserByEmailWithPassword(ctx context.Context, emailAddress string) (views.User, string, error)
 }
 
-func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPasswordResetCommand, users PasswordResetUserReader, saver eventstore.Saver, retriever eventstore.Retriever, keys SubjectPiiKeyPort) (RequestPasswordResetResult, error) {
+func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPasswordResetCommand, users PasswordResetUserReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (RequestPasswordResetResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return RequestPasswordResetResult{}, err
 	}
@@ -37,7 +37,7 @@ func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPass
 	return requestPasswordReset(ctx, user, command.Metadata, saver, retriever, keys)
 }
 
-func requestPasswordReset(ctx context.Context, user views.User, metadata CommandMetadata, saver eventstore.Saver, retriever eventstore.Retriever, keys SubjectPiiKeyPort) (RequestPasswordResetResult, error) {
+func requestPasswordReset(ctx context.Context, user views.User, metadata CommandMetadata, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (RequestPasswordResetResult, error) {
 	model, err := loadRequestPasswordResetContext(ctx, user, retriever)
 	if err != nil {
 		return RequestPasswordResetResult{}, err
@@ -56,8 +56,11 @@ func requestPasswordReset(ctx context.Context, user views.User, metadata Command
 	if !ok {
 		return RequestPasswordResetResult{}, eventstore.ErrNotFound
 	}
-	event := NewPasswordResetRequestedEvent(requestID, user.Email, token, expiresAt, user.UserRegisteredID, subjectKey, nil)
-	if _, err := eventstore.SaveCommandEvents(ctx, saver, metadata, []eventstore.DomainEvent{event}, model.position, model.events, model.query); err != nil {
+	event, err := NewPasswordResetRequestedEvent(requestID, user.Email, token, expiresAt, user.UserRegisteredID, subjectKey, nil)
+	if err != nil {
+		return RequestPasswordResetResult{}, err
+	}
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return RequestPasswordResetResult{}, err
 	}
 	return RequestPasswordResetResult{PasswordResetRequestedID: requestID, Token: token, ExpiresAt: expiresAt}, nil
@@ -69,18 +72,25 @@ type requestPasswordResetContext struct {
 	query    eventstore.Query
 }
 
-func loadRequestPasswordResetContext(ctx context.Context, user views.User, retriever eventstore.Retriever) (*requestPasswordResetContext, error) {
-	query := userRegisteredQuery(user.UserRegisteredID)
+func loadRequestPasswordResetContext(ctx context.Context, user views.User, retriever eventstore.LatestRetriever) (*requestPasswordResetContext, error) {
+	query := requestPasswordResetUserRegisteredQuery(user.UserRegisteredID)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
-	model := &requestPasswordResetContext{position: latest.ContextPosition, events: events, query: query}
-	for _, event := range events {
-		if event.Position.After(model.position) {
-			model.position = event.Position
+	for _, checked := range events {
+		if err := ValidateEvent(checked.Event); err != nil {
+			return nil, err
 		}
 	}
+	model := &requestPasswordResetContext{position: latest.ContextPosition, events: events, query: query}
 	return model, nil
+}
+
+func requestPasswordResetUserRegisteredQuery(userRegisteredID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
+		{Key: eventstore.EventTypeField, Value: UserRegistered},
+		{Key: UserRegisteredIDField, Value: userRegisteredID},
+	}}}}
 }
