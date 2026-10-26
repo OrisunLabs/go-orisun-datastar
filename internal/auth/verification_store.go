@@ -21,24 +21,6 @@ func NewVerificationStore(db *pgxpool.Pool) *VerificationStore {
 	return &VerificationStore{queries: dbsql.New(db)}
 }
 
-func (s *VerificationStore) CreateEmailVerificationOTP(ctx context.Context, userRegisteredID, otpID, code string, expiresAt time.Time) error {
-	return s.queries.CreateAuthVerification(ctx, dbsql.CreateAuthVerificationParams{
-		ID:         otpID,
-		Identifier: "email:" + userRegisteredID,
-		Value:      verificationValueHash("email-verification-otp", code),
-		ExpiresAt:  pgTime(expiresAt),
-	})
-}
-
-func (s *VerificationStore) CreatePasswordReset(ctx context.Context, userRegisteredID, requestID, token string, expiresAt time.Time) error {
-	return s.queries.CreateAuthVerification(ctx, dbsql.CreateAuthVerificationParams{
-		ID:         requestID,
-		Identifier: "password-reset:" + userRegisteredID,
-		Value:      verificationValueHash("password-reset-token", token),
-		ExpiresAt:  pgTime(expiresAt),
-	})
-}
-
 func (s *VerificationStore) PasswordResetByToken(ctx context.Context, token string) (PasswordResetVerification, error) {
 	verification, err := s.queries.PasswordResetVerificationByToken(ctx, verificationValueHash("password-reset-token", token))
 	if err != nil {

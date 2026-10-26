@@ -37,20 +37,28 @@ type AuthSession struct {
 }
 
 type AuthUser struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name"`
-	Email            string             `json:"email"`
-	EmailVerified    bool               `json:"email_verified"`
-	Image            *string            `json:"image"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	Username         *string            `json:"username"`
-	DisplayUsername  *string            `json:"display_username"`
-	Role             *string            `json:"role"`
-	Banned           *bool              `json:"banned"`
-	BanReason        *string            `json:"ban_reason"`
-	BanExpires       pgtype.Timestamptz `json:"ban_expires"`
-	UserRegisteredID string             `json:"user_registered_id"`
+	ID                       string             `json:"id"`
+	Name                     string             `json:"name"`
+	Email                    string             `json:"email"`
+	EmailVerified            bool               `json:"email_verified"`
+	Image                    *string            `json:"image"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	Username                 *string            `json:"username"`
+	DisplayUsername          *string            `json:"display_username"`
+	Role                     *string            `json:"role"`
+	Banned                   *bool              `json:"banned"`
+	BanReason                *string            `json:"ban_reason"`
+	BanExpires               pgtype.Timestamptz `json:"ban_expires"`
+	UserRegisteredID         string             `json:"user_registered_id"`
+	EmailValidatedID         *string            `json:"email_validated_id"`
+	EmailValidationOtpID     *string            `json:"email_validation_otp_id"`
+	EmailValidatedAt         pgtype.Timestamptz `json:"email_validated_at"`
+	LastEventCommitPosition  *int64             `json:"last_event_commit_position"`
+	LastEventPreparePosition *int64             `json:"last_event_prepare_position"`
+	EventPositions           []byte             `json:"event_positions"`
+	Bio                      string             `json:"bio"`
+	HeaderImageUrl           string             `json:"header_image_url"`
 }
 
 type AuthVerification struct {
@@ -74,6 +82,7 @@ type ProfileStat struct {
 	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
 	CreatedAt                pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	EventPositions           []byte             `json:"event_positions"`
 }
 
 type ProjectorCheckpoint struct {

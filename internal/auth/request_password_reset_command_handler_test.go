@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
@@ -28,13 +27,13 @@ func TestPasswordResetProjectsDecryptedTokenAndRejectsTampering(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("reset facts=%d error=%v", len(events), err)
 	}
-	projected := &resetTokenProjection{}
-	handler := &AuthUserProjectionEventHandler{keys: keys, verifications: projected}
-	if err := handler.handle(t.Context(), events[0]); err != nil {
+	change, err := decodeAuthChange(t.Context(), events[0], keys, ProfileSource{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if projected.token != result.Token || projected.user != registered.UserRegisteredID || projected.calls != 1 {
-		t.Fatalf("projected reset token differs from accepted command")
+	projected := change.(VerificationFact)
+	if projected.ValueHash != verificationValueHash("password-reset-token", result.Token) || projected.UserID != registered.UserRegisteredID {
+		t.Fatal("projected token differs from accepted command")
 	}
 	// A validly encoded ciphertext with an invalid authentication tag must
 	// produce an error before persisting another verification row.
@@ -47,12 +46,10 @@ func TestPasswordResetProjectsDecryptedTokenAndRejectsTampering(t *testing.T) {
 		replacement = "B"
 	}
 	token["ciphertext"] = replacement + ciphertext[1:]
-	if err := handler.handle(t.Context(), tampered); err == nil {
+	if _, err := decodeAuthChange(t.Context(), tampered, keys, ProfileSource{}); err == nil {
 		t.Fatal("tampered ciphertext accepted")
 	}
-	if projected.calls != 1 {
-		t.Fatal("tampered token reached projection writer")
-	}
+
 }
 
 type authTestKeys struct {
@@ -82,19 +79,4 @@ type resetTestUser struct{ user views.User }
 
 func (u resetTestUser) UserByEmailWithPassword(context.Context, string) (views.User, string, error) {
 	return u.user, "", nil
-}
-
-type resetTokenProjection struct {
-	token, user string
-	calls       int
-}
-
-func (p *resetTokenProjection) CreatePasswordReset(_ context.Context, user, request, token string, expires time.Time) error {
-	p.token = token
-	p.user = user
-	p.calls++
-	return nil
-}
-func (*resetTokenProjection) CreateEmailVerificationOTP(context.Context, string, string, string, time.Time) error {
-	panic("unexpected OTP projection")
 }

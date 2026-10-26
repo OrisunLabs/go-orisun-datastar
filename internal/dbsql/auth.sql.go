@@ -102,12 +102,11 @@ func (q *Queries) CreateAuthVerification(ctx context.Context, arg CreateAuthVeri
 }
 
 const deleteAuthAccountsByRegisteredID = `-- name: DeleteAuthAccountsByRegisteredID :exec
-DELETE FROM auth_account
-WHERE user_id IN (
-    SELECT id
-    FROM auth_user
-    WHERE user_registered_id = $1
-)
+DELETE
+FROM auth_account
+WHERE user_id IN (SELECT id
+                  FROM auth_user
+                  WHERE user_registered_id = $1)
 `
 
 func (q *Queries) DeleteAuthAccountsByRegisteredID(ctx context.Context, userRegisteredID string) error {
@@ -116,7 +115,8 @@ func (q *Queries) DeleteAuthAccountsByRegisteredID(ctx context.Context, userRegi
 }
 
 const deleteAuthSessionByToken = `-- name: DeleteAuthSessionByToken :exec
-DELETE FROM auth_session
+DELETE
+FROM auth_session
 WHERE token = $1
 `
 
@@ -126,12 +126,11 @@ func (q *Queries) DeleteAuthSessionByToken(ctx context.Context, token string) er
 }
 
 const deleteAuthSessionsByRegisteredID = `-- name: DeleteAuthSessionsByRegisteredID :exec
-DELETE FROM auth_session
-WHERE user_id IN (
-    SELECT id
-    FROM auth_user
-    WHERE user_registered_id = $1
-)
+DELETE
+FROM auth_session
+WHERE user_id IN (SELECT id
+                  FROM auth_user
+                  WHERE user_registered_id = $1)
 `
 
 func (q *Queries) DeleteAuthSessionsByRegisteredID(ctx context.Context, userRegisteredID string) error {
@@ -140,7 +139,8 @@ func (q *Queries) DeleteAuthSessionsByRegisteredID(ctx context.Context, userRegi
 }
 
 const deleteAuthUserByRegisteredID = `-- name: DeleteAuthUserByRegisteredID :exec
-DELETE FROM auth_user
+DELETE
+FROM auth_user
 WHERE user_registered_id = $1
 `
 
@@ -150,7 +150,8 @@ func (q *Queries) DeleteAuthUserByRegisteredID(ctx context.Context, userRegister
 }
 
 const deleteAuthVerificationsByRegisteredID = `-- name: DeleteAuthVerificationsByRegisteredID :exec
-DELETE FROM auth_verification
+DELETE
+FROM auth_verification
 WHERE identifier IN ('email:' || $1, 'password-reset:' || $1)
 `
 
@@ -162,7 +163,7 @@ func (q *Queries) DeleteAuthVerificationsByRegisteredID(ctx context.Context, use
 const markAuthUserEmailVerified = `-- name: MarkAuthUserEmailVerified :exec
 UPDATE auth_user
 SET email_verified = true,
-    updated_at = now()
+    updated_at     = now()
 WHERE user_registered_id = $1
 `
 
@@ -195,7 +196,7 @@ func (q *Queries) PasswordResetVerificationByToken(ctx context.Context, value st
 
 const updateAuthAccountPassword = `-- name: UpdateAuthAccountPassword :exec
 UPDATE auth_account
-SET password = $1,
+SET password   = $1,
     updated_at = now()
 WHERE user_id = $2
   AND provider_id = 'credential'
@@ -213,13 +214,11 @@ func (q *Queries) UpdateAuthAccountPassword(ctx context.Context, arg UpdateAuthA
 
 const updateAuthAccountPasswordByRegisteredID = `-- name: UpdateAuthAccountPasswordByRegisteredID :exec
 UPDATE auth_account
-SET password = $1,
+SET password   = $1,
     updated_at = now()
-WHERE user_id = (
-    SELECT id
-    FROM auth_user
-    WHERE user_registered_id = $2
-)
+WHERE user_id = (SELECT id
+                 FROM auth_user
+                 WHERE user_registered_id = $2)
   AND provider_id = 'credential'
 `
 
@@ -233,26 +232,9 @@ func (q *Queries) UpdateAuthAccountPasswordByRegisteredID(ctx context.Context, a
 	return err
 }
 
-const updateAuthUserImage = `-- name: UpdateAuthUserImage :exec
-UPDATE auth_user
-SET image = $1,
-    updated_at = now()
-WHERE user_registered_id = $2
-`
-
-type UpdateAuthUserImageParams struct {
-	Image            *string `json:"image"`
-	UserRegisteredID string  `json:"user_registered_id"`
-}
-
-func (q *Queries) UpdateAuthUserImage(ctx context.Context, arg UpdateAuthUserImageParams) error {
-	_, err := q.db.Exec(ctx, updateAuthUserImage, arg.Image, arg.UserRegisteredID)
-	return err
-}
-
 const updateAuthUserName = `-- name: UpdateAuthUserName :exec
 UPDATE auth_user
-SET name = $1,
+SET name       = $1,
     updated_at = now()
 WHERE id = $2
 `
@@ -269,7 +251,7 @@ func (q *Queries) UpdateAuthUserName(ctx context.Context, arg UpdateAuthUserName
 
 const updateAuthUserNameByRegisteredID = `-- name: UpdateAuthUserNameByRegisteredID :exec
 UPDATE auth_user
-SET name = $1,
+SET name       = $1,
     updated_at = now()
 WHERE user_registered_id = $2
 `
@@ -288,16 +270,15 @@ const userByEmailWithPassword = `-- name: UserByEmailWithPassword :one
 SELECT u.id,
        u.user_registered_id,
        u.name,
-       coalesce(u.username, '') AS username,
+       coalesce(u.username, '')         AS username,
        u.email,
        u.email_verified,
-       coalesce(u.image, '') AS image,
-       coalesce(p.bio, '') AS bio,
-       coalesce(p.header_image_url, '') AS header_image_url,
+       coalesce(u.image, '')            AS image,
+       coalesce(u.bio, '')              AS bio,
+       coalesce(u.header_image_url, '') AS header_image_url,
        a.password
 FROM auth_user u
-JOIN auth_account a ON a.user_id = u.id AND a.provider_id = 'credential'
-LEFT JOIN profile_stats p ON p.user_id = u.user_registered_id
+         JOIN auth_account a ON a.user_id = u.id AND a.provider_id = 'credential'
 WHERE u.email = $1
 `
 
@@ -336,15 +317,15 @@ const userByIDOrRegisteredID = `-- name: UserByIDOrRegisteredID :one
 SELECT u.id,
        u.user_registered_id,
        u.name,
-       coalesce(u.username, '') AS username,
+       coalesce(u.username, '')         AS username,
        u.email,
        u.email_verified,
-       coalesce(u.image, '') AS image,
-       coalesce(p.bio, '') AS bio,
-       coalesce(p.header_image_url, '') AS header_image_url
+       coalesce(u.image, '')            AS image,
+       coalesce(u.bio, '')              AS bio,
+       coalesce(u.header_image_url, '') AS header_image_url
 FROM auth_user u
-LEFT JOIN profile_stats p ON p.user_id = u.user_registered_id
-WHERE u.id = $1 OR u.user_registered_id = $1
+WHERE u.id = $1
+   OR u.user_registered_id = $1
 `
 
 type UserByIDOrRegisteredIDRow struct {
@@ -380,14 +361,13 @@ const userByRegisteredID = `-- name: UserByRegisteredID :one
 SELECT u.id,
        u.user_registered_id,
        u.name,
-       coalesce(u.username, '') AS username,
+       coalesce(u.username, '')         AS username,
        u.email,
        u.email_verified,
-       coalesce(u.image, '') AS image,
-       coalesce(p.bio, '') AS bio,
-       coalesce(p.header_image_url, '') AS header_image_url
+       coalesce(u.image, '')            AS image,
+       coalesce(u.bio, '')              AS bio,
+       coalesce(u.header_image_url, '') AS header_image_url
 FROM auth_user u
-LEFT JOIN profile_stats p ON p.user_id = u.user_registered_id
 WHERE u.user_registered_id = $1
 `
 
@@ -424,15 +404,14 @@ const userBySessionToken = `-- name: UserBySessionToken :one
 SELECT u.id,
        u.user_registered_id,
        u.name,
-       coalesce(u.username, '') AS username,
+       coalesce(u.username, '')         AS username,
        u.email,
        u.email_verified,
-       coalesce(u.image, '') AS image,
-       coalesce(p.bio, '') AS bio,
-       coalesce(p.header_image_url, '') AS header_image_url
+       coalesce(u.image, '')            AS image,
+       coalesce(u.bio, '')              AS bio,
+       coalesce(u.header_image_url, '') AS header_image_url
 FROM auth_session s
-JOIN auth_user u ON u.id = s.user_id
-LEFT JOIN profile_stats p ON p.user_id = u.user_registered_id
+         JOIN auth_user u ON u.id = s.user_id
 WHERE s.token = $1
   AND s.expires_at > now()
 `

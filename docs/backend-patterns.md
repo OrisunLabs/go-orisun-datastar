@@ -18,13 +18,13 @@ Run `task test`, `task vet`, `task build` and `git diff --check`. These do not r
 
 ## Existing contracts requiring separate coordinated conversion
 
-Command consistency is implemented across existing handlers. The following architectural conversions remain:
+Command consistency is implemented across existing handlers. The coordinated conversions completed in this starter are:
 
 - Todo, auth and profile event contracts are converted as described below. Any future event format change requires a coordinated update to constructors, decoders, consumers, queries, indexes and fixtures, with an explicit decision about existing stored history. Do not add mixed decoders or silently rewrite events.
 - Command slices now own their criteria and context loaders across auth, todo and profile. Keep authority helpers private to the behavior; do not introduce configurable context frameworks.
 - Todo bulk actions now use an explicit caller-owned selection with atomic event-authoritative validation and one append, as described below. Projection selection is a candidate snapshot, not a claim about all unprojected or future todos.
 - Keep future event consumers behind strict per-event decoding, including nested protected PII. Plaintext validation requires the owning key and must complete before projection writes or other effects.
-- Todo now uses a typed source-ordered fold and transaction-bound projection repository, described in `todo-projection-transactions.md`. Auth and profile projection transactions remain to be converted as separate owners.
+- Todo now uses a typed source-ordered fold and transaction-bound projection repository, described in `todo-projection-transactions.md`. Auth and profile use separate transaction-bound owners as documented in their projection contracts.
 - Existing NATS KV session view-state remains the rendering path. Its CQRS split already follows the CQRS principle: commands acknowledge acceptance, projection notifications invalidate, and SSE reads and patches server-rendered fragments.
 
 Database resets, reseeding and historical event conversions require explicit authorization.
@@ -39,7 +39,7 @@ The real-Orisun lifecycle test exercises create, rename, complete, reopen and de
 
 This is a breaking todo event format and fresh-install projection schema change. Existing installations also require an explicit migration or recreation decision for the former `todo_items.user_registered_id` column. Existing singular-scope todo events are not upcast or rewritten: they fail strict decoding on replay. Existing projected todos are not automatically converted. Deployments with old todo history must explicitly choose a historical conversion strategy or authorize recreation of disposable development data before adopting this format. No database reset or reseed has been performed.
 
-The todo conversion leaves command query ownership, bulk-action atomicity and projection transaction architecture as separate work. Auth contracts are converted in the next section; profile contracts are converted below.
+Command query ownership, bulk-action atomicity and projection transactions are completed in the sections below. Auth contracts are converted in the next section; profile contracts are converted below.
 
 ## Auth event-contract conversion
 
@@ -51,7 +51,7 @@ Commands validate selected authoritative occurrences before interpreting them. R
 
 Real-Orisun tests retain OTP consistency/concurrent-replacement checks and exercise registration and password-reset requests through public commands. Additional contract tests reject unknown, missing, null and legacy fields across every auth type before projection effects. The reset projection regression verifies the actual decrypted token and rejects tampered ciphertext before another write.
 
-This is a breaking auth event-format change. Existing singular-scope auth history, empty registration scopes and the previous optional login user field are not accepted by the new decoders. Existing deployments need an explicit conversion or disposable-development recreation decision. No reset, reseed, event rewriting or index removal is automatic. Projection transaction architecture and command query ownership remain separate slices.
+This is a breaking auth event-format change. Existing singular-scope auth history, empty registration scopes and the previous optional login user field are not accepted by the new decoders. Existing deployments need an explicit conversion or disposable-development recreation decision. No reset, reseed, event rewriting or index removal is automatic. Command query ownership and projection transactions are completed below.
 
 ## Profile event-contract conversion
 
@@ -59,21 +59,21 @@ Bio, avatar and header-image events are independent profile facts with event-spe
 
 Checked constructors and strict decoders enforce exact required fields, canonical nonzero UUIDs, canonical UTC instants, structured encrypted bio values and matching blind indexes. Image URLs must be root-relative paths or absolute HTTP(S) URLs, with no protocol-relative form, credentials, fragments, backslashes or whitespace/control characters. Empty bio values remain valid for clearing; decryption validates normalized plaintext, the 280-byte limit and blind-index agreement. PII authentication failures return errors rather than panicking or applying empty defaults.
 
-Commands decode selected profile authority before decisions. Image commands validate the resulting event/URL before uploading bytes. The read-model handler and avatar-to-auth bridge decode profile facts before effects; minimal `userId` notifications follow successful persistence. Profile consumes only a read capability for subject PII keys. Auth registration/name-change subscriptions retain their own typed source decoders and translate those facts at the consumer edge.
+Commands decode selected profile authority before decisions. Image commands validate the resulting event/URL before uploading bytes. Both owning projections decode profile facts before effects; minimal `userId` notifications follow successful persistence. Profile consumes only a read capability for subject PII keys. Auth registration/name-change subscriptions retain their own typed source decoders and translate those facts at the consumer edge.
 
-Real-Orisun command tests cover bio round trips, unchanged retries, clearing, ciphertext tampering, concurrent bio updates, avatar/header ownership references and rejection of an invalid storage URL before upload. Malformed-contract tests cover all three event types and reject old scopes, unknown/missing/null fields and invalid owners before projection or bridge calls.
+Real-Orisun command tests cover bio round trips, unchanged retries, clearing, ciphertext tampering, concurrent bio updates, avatar/header ownership references and rejection of an invalid storage URL before upload. Malformed-contract tests cover all three event types and reject old scopes, unknown/missing/null fields and invalid owners before projection effects.
 
-This is a breaking profile event format change. Old singular-scope profile history requires an explicit conversion or disposable-development recreation decision; no reset, reseed or historical rewrite has been performed. Command context/query ownership is completed in the next section. Bulk-action atomicity, projection transaction architecture and SSE lifecycle verification remain separate work.
+This is a breaking profile event format change. Old singular-scope profile history requires an explicit conversion or disposable-development recreation decision; no reset, reseed or historical rewrite has been performed. Command context/query ownership is completed in the next section. Bulk-action atomicity, projection transactions and SSE lifecycle verification are completed below.
 
 ## Command context and query ownership
 
 Each auth, todo and profile behavior owns its private contexts, context loaders and query builders in its command-handler file. Shared query bundles have been removed. Account-deletion request and completion are separate behavior files; shared consumer ports remain in `ports.go`. Email command entrypoints delegate all authoritative reads, validation, decryption and context interpretation to their private loaders. Login auditing owns a save-only context containing the validated event and its collision observation.
 
-Each command retains its existing criteria and batches of independent observations. Loaders preserve the exact position returned by each read rather than recomputing positions from fetched events. Each mutating behavior has one terminal `SaveCommandEventsV2` site. Pure title validation, MIME-extension mapping, event contracts, audit metadata and external-effect interfaces remain shareable. Exported commands can still be composed by orchestration wrappers; todo bulk commands use the atomic selection contract described below.
+Each command retains its existing criteria and batches of independent observations. Loaders preserve the exact position returned by each read rather than recomputing positions from fetched events. Each mutating behavior has one terminal `SaveCommandEventsV2` site. Pure title validation, MIME-extension mapping, event contracts, audit metadata and external-effect interfaces remain shareable. Orchestration helpers may call command handlers, but command handlers cannot delegate their persistence to helpers or other commands; todo bulk commands use the atomic selection contract described below.
 
 `TestCommandAuthorityHelpersStayWithinOwningSlice` follows local helper calls and checks context ownership, rejects shared authority/query helpers and history scans, requires public handlers to delegate latest-event reads to loaders, and enforces one behavior per file and no multiple terminal save sites. Tests inspect persisted facts with independent queries instead of calling production command query builders.
 
-Real-Orisun email tests verify recorded-send redelivery, failed-send retries, decoded recipients/content and persisted consistency contexts. Existing OTP replacement, todo deletion and profile bio race tests continue to exercise the original guards. This conversion changes code ownership without changing event contracts, query shapes, database schema or public command signatures. No reset or reseed was performed. Bulk-action atomicity is completed below; projection transactions and SSE lifecycle remain outstanding.
+Real-Orisun email tests verify recorded-send redelivery, failed-send retries, decoded recipients/content and persisted consistency contexts. Existing OTP replacement, todo deletion and profile bio race tests continue to exercise the original guards. This conversion changes code ownership without changing event contracts, query shapes, database schema or public command signatures. No reset or reseed was performed. Bulk-action atomicity, projection transactions and SSE lifecycle verification are completed below.
 
 ## Atomic todo bulk actions
 
@@ -85,7 +85,7 @@ Every unapplied member must exist, belong to the user, remain undeleted and matc
 
 Consistency observations are persisted once by Orisun’s write context, not copied into each event’s metadata. Audit metadata remains per event; this avoids quadratic metadata growth for a batch. Existing `TodoCompleted`, `TodoReopened` and `TodoDeleted` contracts are unchanged. Retry lookup uses Orisun’s built-in envelope type/ID indexes; authority reads use `todo_created` and `todo_ancestry`.
 
-Real-Orisun tests verify a shared write ID and complete stored observation, exact retries including historical outcomes, foreign-owner rejection, duplicate operation-ID rejection, reassignment conflicts, stale-status rejection and concurrent delete/reopen conflicts without partial effects. No migrations or data resets are required. Projection transaction ownership is the next slice; SSE lifecycle verification remains outstanding.
+Real-Orisun tests verify a shared write ID and complete stored observation, exact retries including historical outcomes, foreign-owner rejection, duplicate operation-ID rejection, reassignment conflicts, stale-status rejection and concurrent delete/reopen conflicts without partial effects. No migrations or data resets are required. Projection transaction ownership is completed below; SSE lifecycle verification is covered by [the stream lifecycle checks](sse-lifecycle.md).
 
 ## Batch-only todo command API
 
@@ -95,7 +95,7 @@ Creation takes `Titles`, keyed by caller-allocated creation/event IDs. It valida
 
 The rename form submits its original rendered title as `expectedTitle`. Unchanged titles remain no-ops. The expected-title guard prevents retrying such a no-op from overwriting an intervening rename; persisted outcomes still make exact retries succeed after later changes. Separate invocations allocate new intent identities. Event contracts remain unchanged.
 
-Tests cover one- and multiple-item use through the same public handlers, creation collisions, stale expected titles, historical outcome retries, unchanged rename retries and concurrent create/delete conflicts with no partial writes. No database reset or migration was performed. Projection transaction ownership remains the next slice.
+Tests cover one- and multiple-item use through the same public handlers, creation collisions, stale expected titles, historical outcome retries, unchanged rename retries and concurrent create/delete conflicts with no partial writes. No database reset or migration was performed. Projection transaction ownership is completed below.
 
 ## Todo projection transaction ownership
 
@@ -103,4 +103,18 @@ Todo projection interfaces and typed facts live in `internal/features/todo/contr
 
 The canonical fresh-install todo schema retains completion and reopening facts, derives `completed` from their full positions and keeps occurrence provenance in `event_positions`. State, the row watermark and each occurrence’s evidence are persisted atomically. Existing installations require an explicit read-model schema recreation/migration decision; no data reset was run. The default event-handler callback still supplies singleton deliveries; the projector also accepts ordered multi-occurrence batches and is tested for partition equivalence. Source ordering between calls remains the serial subscriber’s responsibility.
 
-Native PostgreSQL tests verify same-row read-after-write, batch/singleton/partition equivalence, retained lifecycle facts, full-position replay identity, rollback after a real constraint failure and owner transaction lifetime. Behavior tests verify post-commit publication and retry after notification failure without repeating effects. See [the self-contained contract and test instructions](todo-projection-transactions.md). The temporary PostgreSQL test server is separate from application and event databases. Auth projection transactions are the next slice; profile projection transactions and SSE lifecycle verification remain outstanding.
+Native PostgreSQL tests verify same-row read-after-write, batch/singleton/partition equivalence, retained lifecycle facts, full-position replay identity, rollback after a real constraint failure and owner transaction lifetime. Behavior tests verify post-commit publication and retry after notification failure without repeating effects. See [the self-contained contract and test instructions](todo-projection-transactions.md). The temporary PostgreSQL test server is separate from application and event databases. Auth projection transactions now follow the same owner boundary; see [auth projection transactions](auth-projection-transactions.md). Profile now uses the same transaction boundary; see [profile projection transactions](profile-projection-transactions.md). SSE lifecycle verification is covered by [the stream lifecycle checks](sse-lifecycle.md).
+
+## Auth-owned profile facts
+
+Auth projects avatar, bio and header-image events into its own user row using its existing watermark and transaction boundary. Server composition translates strict profile contracts into typed auth inputs, keeping packages independent and retaining ordinary `userId` references. All session/login reads query auth-owned tables. The separate image bridge and its direct write method/query are removed; auth emits routing-only profile invalidation after commit. See [auth projection transactions](auth-projection-transactions.md) for migration/replay requirements for existing installations.
+
+## Terminal command persistence
+
+A repository-wide syntax guard discovers command handlers from declarations and requires exactly one handler-owned `SaveCommandEventsV2` call in the common function body. It rejects legacy/raw saves, writes delegated to helpers or other commands, captures of save functions/methods, saves inside loops/closures/goroutines/defers and event construction after persistence. Negative fixture tests verify each prohibited shape; an atomic batch with an early retry return remains valid.
+
+Password-reset request event construction and persistence now live directly in `RequestPasswordResetCommandHandler`. The user-lookup wrapper `ValidateEmailVerificationOTPForUser` remains orchestration and delegates to the typed OTP command. Neither change alters event contracts, query shapes, consistency observations, user-enumeration behavior or side-effect order. Existing real-Orisun command tests verify the behavior. The guard supplements command context/query ownership checks and covers both auth and feature command packages.
+
+## Credential ownership
+
+Password changes require the credential lookup's returned registered-user identity to match the command user. Account-deletion requests require both the registered-user identity and auth-user ID to match. These checks run before password verification, authority loading or persistence. Real-Orisun tests cover matching owners, mismatched identities, missing owners, incorrect passwords and lookup failures, and verify rejected commands append no facts. Password-change ownership is based on the stable registered-user identity; deletion additionally binds the auth account being deleted.

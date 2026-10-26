@@ -7,7 +7,7 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 )
 
-func ValidateEmailVerificationOTPForUserCommandHandler(ctx context.Context, userID, code string, metadata CommandMetadata, users AuthUserByIDReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
+func ValidateEmailVerificationOTPForUser(ctx context.Context, userID, code string, metadata CommandMetadata, users AuthUserByIDReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(struct {
 		UserID string
 		Code   string

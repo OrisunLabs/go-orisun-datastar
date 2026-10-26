@@ -48,6 +48,9 @@ func (s *MemoryStore) Delete(ctx context.Context, key string) error {
 }
 
 func (s *MemoryStore) Watch(ctx context.Context, key string, opts WatchOptions) (Watcher, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	w := &memoryWatcher{
 		store:         s,
 		key:           key,
@@ -67,8 +70,11 @@ func (s *MemoryStore) Watch(ctx context.Context, key string, opts WatchOptions) 
 	s.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
-		_ = w.Stop()
+		select {
+		case <-ctx.Done():
+			_ = w.Stop()
+		case <-w.done:
+		}
 	}()
 
 	return w, nil

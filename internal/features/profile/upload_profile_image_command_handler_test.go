@@ -79,16 +79,10 @@ func TestProfileConsumersRejectMalformedContracts(t *testing.T) {
 				if _, err := profileEventUserID(corrupt); err == nil {
 					t.Fatal("invalid contract accepted")
 				}
-				handler := &ReadModelEventHandler{}
-				if err := handler.handle(t.Context(), eventstore.ResolvedEvent{Event: corrupt}); err == nil {
+				if _, err := decodeProfileChange(t.Context(), eventstore.ResolvedEvent{Event: corrupt}, keys); err == nil {
 					t.Fatal("invalid contract reached projection")
 				}
-				if event.EventType == ProfileImageUploaded {
-					bridge := &ProfileImageUploadedAuthUserEventHandler{}
-					if err := bridge.handle(t.Context(), eventstore.ResolvedEvent{Event: corrupt}); err == nil {
-						t.Fatal("invalid contract reached auth bridge")
-					}
-				}
+
 			})
 		}
 	}

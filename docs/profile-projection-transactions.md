@@ -1,0 +1,15 @@
+# Profile projection transactions
+
+`internal/features/profile/project.go` owns an ordered load/apply/save loop for registration, name, bio, avatar and header-image inputs. It strictly decodes auth-owned registration/name contracts and profile-owned contracts; profile events retain their ordinary `userId` reference. Decryption and bio-integrity failures return errors through the transaction rollback path.
+
+`ProjectionRepository` accepts typed profile state and occurrence identity. Its PostgreSQL adapter privately binds sqlc queries to the owner's transaction. All operations reject unbound, foreign and expired contexts, and nested transactions are rejected. An advisory lock serializes overlapping deliveries; subscription ordering remains required between batches. The handler currently delivers singleton batches through the same projection API.
+
+Each occurrence checks full commit/prepare evidence before payload decoding or key lookup. New occurrences load current state inside the transaction, fold the owning fields and save state, watermark and occurrence evidence before advancing. Distinct occurrences can share a commit or event ID. Historical unseen input records evidence while retaining newer state. The existing ability to establish a sparse profile from a field update is retained; later ordered field updates preserve other fields, including a deliberately cleared bio.
+
+`ReadModel` is query-only. The previous per-field pool-backed upserts are removed. `ReadModelEventHandler` publishes only `userId` invalidation after a successful commit. Failed publication can retry from persisted evidence without decrypting or applying the event again. A transaction failure publishes nothing.
+
+`003_profile_projection.sql` adds JSON occurrence evidence idempotently, preserving existing rows, timestamps and checkpoints. Existing history is not automatically replayed or backfilled. JSON membership remains an unindexed lookup; the primary key serves current-state loads. No separate receipt-only table or source-query index is added: the subscription types and shape are unchanged. Creation/update timestamps remain operational delivery timestamps and are excluded from semantic partition comparisons.
+
+Account deletion still removes the owning row and its replay evidence. The independent profile-image-to-auth bridge is removed; auth now consumes profile events through its own transaction-bound projection. This slice does not define deletion/recreation behavior or combine auth/profile owners into one transaction.
+
+Run `task test`, `task vet` and `task build`. Set `TEST_DATABASE_URL` to a disposable PostgreSQL database to include native checks. Tests use isolated schemas and compare one batch, singleton deliveries and varied partitions across interleaved users; they cover same-row field preservation, clearing, full-position identity, historical and exact replay, SQL/decryption rollback, migration reapplication, own-write visibility, pool isolation and transaction lifetime. Pure Go tests cover failed-batch rollback, strict ordering and publication retry after commit. No application data reset or reseed is performed.

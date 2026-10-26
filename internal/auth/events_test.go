@@ -91,8 +91,8 @@ func TestAuthContractsRejectMalformedFactsBeforeConsumerEffects(t *testing.T) {
 					if err := ValidateEvent(corrupt); !errors.Is(err, eventstore.ErrInvalidEvent) {
 						t.Fatalf("accepted corrupt contract: %v", err)
 					}
-					projector := &AuthUserProjectionEventHandler{}
-					if err := projector.handle(t.Context(), eventstore.ResolvedEvent{Event: corrupt}); !errors.Is(err, eventstore.ErrInvalidEvent) {
+					_, decodeErr := decodeAuthChange(t.Context(), eventstore.ResolvedEvent{Event: corrupt}, nil, ProfileSource{})
+					if err := decodeErr; !errors.Is(err, eventstore.ErrInvalidEvent) {
 						t.Fatalf("consumer accepted malformed fact: %v", err)
 					}
 				})

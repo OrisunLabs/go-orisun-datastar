@@ -36,17 +36,19 @@ type runOptions struct {
 }
 
 type appComponents struct {
-	sessionManager   *auth.SessionManager
-	authUsers        *auth.AuthUserStore
-	verifications    *auth.VerificationStore
-	todoReadModel    *todo.ReadModel
-	todoProjection   *todo.PostgreSQLProjectionRepository
-	profileReadModel *profile.ReadModel
-	checkpointer     eventstore.Checkpointer
-	emailSender      email.Sender
-	profileStorage   profile.ObjectStore
-	piiKeys          *auth.SubjectPiiKeyStore
-	accountDeletion  *auth.AccountDataDeletionStore
+	sessionManager    *auth.SessionManager
+	authUsers         *auth.AuthUserStore
+	authProjection    *auth.PostgreSQLProjectionRepository
+	verifications     *auth.VerificationStore
+	todoReadModel     *todo.ReadModel
+	todoProjection    *todo.PostgreSQLProjectionRepository
+	profileReadModel  *profile.ReadModel
+	profileProjection *profile.PostgreSQLProjectionRepository
+	checkpointer      eventstore.Checkpointer
+	emailSender       email.Sender
+	profileStorage    profile.ObjectStore
+	piiKeys           *auth.SubjectPiiKeyStore
+	accountDeletion   *auth.AccountDataDeletionStore
 }
 
 type eventHandler interface {
@@ -218,17 +220,19 @@ func newAppComponents(db *pgxpool.Pool, store *eventstore.EmbeddedOrisun, cfg co
 	accountDeletion := auth.NewAccountDataDeletionStore(db, profileStorage)
 
 	return appComponents{
-		sessionManager:   sessionManager,
-		authUsers:        authUsers,
-		verifications:    verifications,
-		todoReadModel:    todoReadModel,
-		todoProjection:   todo.NewPostgreSQLProjectionRepository(db),
-		profileReadModel: profileReadModel,
-		checkpointer:     eventstore.NewPostgresCheckpointer(db),
-		emailSender:      email.LogSender{Logger: logger},
-		profileStorage:   profileStorage,
-		piiKeys:          piiKeys,
-		accountDeletion:  accountDeletion,
+		sessionManager:    sessionManager,
+		authUsers:         authUsers,
+		authProjection:    auth.NewPostgreSQLProjectionRepository(db),
+		verifications:     verifications,
+		todoReadModel:     todoReadModel,
+		todoProjection:    todo.NewPostgreSQLProjectionRepository(db),
+		profileReadModel:  profileReadModel,
+		profileProjection: profile.NewPostgreSQLProjectionRepository(db),
+		checkpointer:      eventstore.NewPostgresCheckpointer(db),
+		emailSender:       email.LogSender{Logger: logger},
+		profileStorage:    profileStorage,
+		piiKeys:           piiKeys,
+		accountDeletion:   accountDeletion,
 	}
 }
 
@@ -255,7 +259,7 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "auth user projection",
 			create: func() (eventHandler, error) {
-				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authUsers, components.verifications, components.piiKeys, logger)
+				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authProjection, components.piiKeys, authProfileSource(), authUserInvalidator{publisher: bus}, logger)
 			},
 		},
 		{
@@ -267,13 +271,7 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "profile read model",
 			create: func() (eventHandler, error) {
-				return profile.NewReadModelEventHandler(store, components.checkpointer, components.profileReadModel, bus, components.piiKeys, logger)
-			},
-		},
-		{
-			name: "profile image auth user bridge",
-			create: func() (eventHandler, error) {
-				return profile.NewProfileImageUploadedAuthUserEventHandler(store, components.checkpointer, components.authUsers, bus, logger)
+				return profile.NewReadModelEventHandler(store, components.checkpointer, components.profileProjection, bus, components.piiKeys, logger)
 			},
 		},
 		{

@@ -151,4 +151,4 @@ Commands use narrow ports, bounded latest-event context reads and one `SaveComma
 
 See [backend architecture patterns and remaining conversions](docs/backend-patterns.md). Existing NATS KV view-state remains supported.
 
-Todo projection persistence uses a transaction-bound repository and an ordered state fold. See [todo projection transactions](docs/todo-projection-transactions.md). Set `TEST_DATABASE_URL` to a disposable PostgreSQL database to run native projection checks with `task test`; tests create and remove isolated schemas.
+Todo projection persistence uses a transaction-bound repository and an ordered state fold. See [todo projection transactions](docs/todo-projection-transactions.md), [auth projection transactions](docs/auth-projection-transactions.md), and [profile projection transactions](docs/profile-projection-transactions.md). Set `TEST_DATABASE_URL` to a disposable PostgreSQL database to run native projection checks with `task test`; tests create and remove isolated schemas.

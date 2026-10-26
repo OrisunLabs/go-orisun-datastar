@@ -58,7 +58,7 @@ func (s *AccountDataDeletionStore) deleteKnownMedia(ctx context.Context, userReg
 	if s.storage == nil {
 		return nil
 	}
-	row, err := dbsql.New(s.db).ProfileUser(ctx, userRegisteredID)
+	row, err := dbsql.New(s.db).UserByRegisteredID(ctx, userRegisteredID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

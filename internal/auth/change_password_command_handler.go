@@ -26,9 +26,12 @@ func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCom
 	if len(command.NewPassword) < 6 {
 		return errors.New("password must be at least 6 characters")
 	}
-	_, currentHash, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
+	credentialUser, currentHash, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
 	if err != nil {
 		return err
+	}
+	if credentialUser.UserRegisteredID != command.User.UserRegisteredID {
+		return errors.New("password credential does not belong to registered user")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(command.CurrentPassword)); err != nil {
 		return errors.New("current password is incorrect")

@@ -10,7 +10,8 @@ import (
 )
 
 const deleteProfileByRegisteredID = `-- name: DeleteProfileByRegisteredID :exec
-DELETE FROM profile_stats
+DELETE
+FROM profile_stats
 WHERE user_id = $1
 `
 
@@ -19,13 +20,79 @@ func (q *Queries) DeleteProfileByRegisteredID(ctx context.Context, userRegistere
 	return err
 }
 
+const findProcessedProfile = `-- name: FindProcessedProfile :one
+SELECT user_id
+FROM profile_stats
+WHERE event_positions ? $1::text
+LIMIT 1
+`
+
+func (q *Queries) FindProcessedProfile(ctx context.Context, positionKey string) (string, error) {
+	row := q.db.QueryRow(ctx, findProcessedProfile, positionKey)
+	var user_id string
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const loadProfileProjection = `-- name: LoadProfileProjection :one
+SELECT user_id,
+       name,
+       username,
+       email,
+       bio,
+       image,
+       header_image_url,
+       last_event_commit_position,
+       last_event_prepare_position
+FROM profile_stats
+WHERE user_id = $1 FOR UPDATE
+`
+
+type LoadProfileProjectionRow struct {
+	UserID                   string  `json:"user_id"`
+	Name                     *string `json:"name"`
+	Username                 *string `json:"username"`
+	Email                    *string `json:"email"`
+	Bio                      *string `json:"bio"`
+	Image                    *string `json:"image"`
+	HeaderImageUrl           *string `json:"header_image_url"`
+	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
+	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
+}
+
+func (q *Queries) LoadProfileProjection(ctx context.Context, userID string) (LoadProfileProjectionRow, error) {
+	row := q.db.QueryRow(ctx, loadProfileProjection, userID)
+	var i LoadProfileProjectionRow
+	err := row.Scan(
+		&i.UserID,
+		&i.Name,
+		&i.Username,
+		&i.Email,
+		&i.Bio,
+		&i.Image,
+		&i.HeaderImageUrl,
+		&i.LastEventCommitPosition,
+		&i.LastEventPreparePosition,
+	)
+	return i, err
+}
+
+const lockProfileProjection = `-- name: LockProfileProjection :exec
+SELECT pg_advisory_xact_lock(hashtextextended('profile-projection', 0))
+`
+
+func (q *Queries) LockProfileProjection(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockProfileProjection)
+	return err
+}
+
 const profileUser = `-- name: ProfileUser :one
 SELECT user_id,
-       coalesce(name, '') AS name,
-       coalesce(username, '') AS username,
-       coalesce(email, '') AS email,
-       coalesce(image, '') AS image,
-       coalesce(bio, '') AS bio,
+       coalesce(name, '')             AS name,
+       coalesce(username, '')         AS username,
+       coalesce(email, '')            AS email,
+       coalesce(image, '')            AS image,
+       coalesce(bio, '')              AS bio,
        coalesce(header_image_url, '') AS header_image_url
 FROM profile_stats
 WHERE user_id = $1
@@ -56,143 +123,53 @@ func (q *Queries) ProfileUser(ctx context.Context, userID string) (ProfileUserRo
 	return i, err
 }
 
-const upsertProfileBio = `-- name: UpsertProfileBio :exec
-INSERT INTO profile_stats (user_id, bio, last_event_commit_position, last_event_prepare_position)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE SET
-    bio = EXCLUDED.bio,
-    last_event_commit_position = EXCLUDED.last_event_commit_position,
-    last_event_prepare_position = EXCLUDED.last_event_prepare_position,
-    updated_at = now()
+const saveProfileProjection = `-- name: SaveProfileProjection :execrows
+INSERT INTO profile_stats AS p(user_id, name, username, email, bio, image, header_image_url, last_event_commit_position,
+                               last_event_prepare_position, event_positions)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+        $9, $10::jsonb)
+ON CONFLICT(user_id) DO UPDATE SET name=EXCLUDED.name,
+                                   username=EXCLUDED.username,
+                                   email=EXCLUDED.email,
+                                   bio=EXCLUDED.bio,
+                                   image=EXCLUDED.image,
+                                   header_image_url=EXCLUDED.header_image_url,
+                                   last_event_commit_position=EXCLUDED.last_event_commit_position,
+                                   last_event_prepare_position=EXCLUDED.last_event_prepare_position,
+                                   event_positions=EXCLUDED.event_positions || p.event_positions,
+                                   updated_at=now()
+WHERE (p.last_event_commit_position, p.last_event_prepare_position) <=
+      (EXCLUDED.last_event_commit_position, EXCLUDED.last_event_prepare_position)
 `
 
-type UpsertProfileBioParams struct {
-	UserID                   string  `json:"user_id"`
-	Bio                      *string `json:"bio"`
-	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
-	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
-}
-
-func (q *Queries) UpsertProfileBio(ctx context.Context, arg UpsertProfileBioParams) error {
-	_, err := q.db.Exec(ctx, upsertProfileBio,
-		arg.UserID,
-		arg.Bio,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-	)
-	return err
-}
-
-const upsertProfileHeaderImage = `-- name: UpsertProfileHeaderImage :exec
-INSERT INTO profile_stats (user_id, header_image_url, last_event_commit_position, last_event_prepare_position)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE SET
-    header_image_url = EXCLUDED.header_image_url,
-    last_event_commit_position = EXCLUDED.last_event_commit_position,
-    last_event_prepare_position = EXCLUDED.last_event_prepare_position,
-    updated_at = now()
-`
-
-type UpsertProfileHeaderImageParams struct {
-	UserID                   string  `json:"user_id"`
-	HeaderImageUrl           *string `json:"header_image_url"`
-	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
-	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
-}
-
-func (q *Queries) UpsertProfileHeaderImage(ctx context.Context, arg UpsertProfileHeaderImageParams) error {
-	_, err := q.db.Exec(ctx, upsertProfileHeaderImage,
-		arg.UserID,
-		arg.HeaderImageUrl,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-	)
-	return err
-}
-
-const upsertProfileImage = `-- name: UpsertProfileImage :exec
-INSERT INTO profile_stats (user_id, image, last_event_commit_position, last_event_prepare_position)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE SET
-    image = EXCLUDED.image,
-    last_event_commit_position = EXCLUDED.last_event_commit_position,
-    last_event_prepare_position = EXCLUDED.last_event_prepare_position,
-    updated_at = now()
-`
-
-type UpsertProfileImageParams struct {
-	UserID                   string  `json:"user_id"`
-	Image                    *string `json:"image"`
-	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
-	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
-}
-
-func (q *Queries) UpsertProfileImage(ctx context.Context, arg UpsertProfileImageParams) error {
-	_, err := q.db.Exec(ctx, upsertProfileImage,
-		arg.UserID,
-		arg.Image,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-	)
-	return err
-}
-
-const upsertProfileName = `-- name: UpsertProfileName :exec
-INSERT INTO profile_stats (user_id, name, last_event_commit_position, last_event_prepare_position)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE SET
-    name = EXCLUDED.name,
-    last_event_commit_position = EXCLUDED.last_event_commit_position,
-    last_event_prepare_position = EXCLUDED.last_event_prepare_position,
-    updated_at = now()
-`
-
-type UpsertProfileNameParams struct {
-	UserID                   string  `json:"user_id"`
-	Name                     *string `json:"name"`
-	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
-	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
-}
-
-func (q *Queries) UpsertProfileName(ctx context.Context, arg UpsertProfileNameParams) error {
-	_, err := q.db.Exec(ctx, upsertProfileName,
-		arg.UserID,
-		arg.Name,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-	)
-	return err
-}
-
-const upsertRegisteredProfileUser = `-- name: UpsertRegisteredProfileUser :exec
-INSERT INTO profile_stats (user_id, name, username, email, last_event_commit_position, last_event_prepare_position)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (user_id) DO UPDATE SET
-    name = EXCLUDED.name,
-    username = EXCLUDED.username,
-    email = EXCLUDED.email,
-    last_event_commit_position = EXCLUDED.last_event_commit_position,
-    last_event_prepare_position = EXCLUDED.last_event_prepare_position,
-    updated_at = now()
-`
-
-type UpsertRegisteredProfileUserParams struct {
+type SaveProfileProjectionParams struct {
 	UserID                   string  `json:"user_id"`
 	Name                     *string `json:"name"`
 	Username                 *string `json:"username"`
 	Email                    *string `json:"email"`
+	Bio                      *string `json:"bio"`
+	Image                    *string `json:"image"`
+	HeaderImageUrl           *string `json:"header_image_url"`
 	LastEventCommitPosition  int64   `json:"last_event_commit_position"`
 	LastEventPreparePosition int64   `json:"last_event_prepare_position"`
+	EventPositions           []byte  `json:"event_positions"`
 }
 
-func (q *Queries) UpsertRegisteredProfileUser(ctx context.Context, arg UpsertRegisteredProfileUserParams) error {
-	_, err := q.db.Exec(ctx, upsertRegisteredProfileUser,
+func (q *Queries) SaveProfileProjection(ctx context.Context, arg SaveProfileProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveProfileProjection,
 		arg.UserID,
 		arg.Name,
 		arg.Username,
 		arg.Email,
+		arg.Bio,
+		arg.Image,
+		arg.HeaderImageUrl,
 		arg.LastEventCommitPosition,
 		arg.LastEventPreparePosition,
+		arg.EventPositions,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

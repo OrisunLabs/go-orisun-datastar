@@ -34,10 +34,6 @@ func RequestPasswordResetCommandHandler(ctx context.Context, command RequestPass
 	if err != nil {
 		return RequestPasswordResetResult{}, nil
 	}
-	return requestPasswordReset(ctx, user, command.Metadata, saver, retriever, keys)
-}
-
-func requestPasswordReset(ctx context.Context, user views.User, metadata CommandMetadata, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (RequestPasswordResetResult, error) {
 	model, err := loadRequestPasswordResetContext(ctx, user, retriever)
 	if err != nil {
 		return RequestPasswordResetResult{}, err
@@ -60,7 +56,7 @@ func requestPasswordReset(ctx context.Context, user views.User, metadata Command
 	if err != nil {
 		return RequestPasswordResetResult{}, err
 	}
-	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return RequestPasswordResetResult{}, err
 	}
 	return RequestPasswordResetResult{PasswordResetRequestedID: requestID, Token: token, ExpiresAt: expiresAt}, nil

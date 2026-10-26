@@ -121,7 +121,7 @@ func (s Server) validateEmail(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "auth.validate_email", map[string]any{"userId": chi.URLParam(r, "userID")})
 	_ = r.ParseForm()
 	userID := chi.URLParam(r, "userID")
-	if err := auth.ValidateEmailVerificationOTPForUserCommandHandler(r.Context(), userID, r.FormValue("otp"), eventstore.HTTPCommandMetadata(r, ""), s.AuthUsers, s.EventSaver, s.EventRetriever); err != nil {
+	if err := auth.ValidateEmailVerificationOTPForUser(r.Context(), userID, r.FormValue("otp"), eventstore.HTTPCommandMetadata(r, ""), s.AuthUsers, s.EventSaver, s.EventRetriever); err != nil {
 		patchTempl(w, r, views.ValidateEmailForm(userID, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}

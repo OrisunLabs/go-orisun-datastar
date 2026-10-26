@@ -24,9 +24,12 @@ func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAc
 	if command.User.UserRegisteredID == "" {
 		return "", errors.New("user is required")
 	}
-	_, hash, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
+	credentialUser, hash, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
 	if err != nil {
 		return "", errors.New("invalid password")
+	}
+	if credentialUser.UserRegisteredID != command.User.UserRegisteredID || credentialUser.ID != command.User.ID {
+		return "", errors.New("password credential does not belong to account")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(command.Password)); err != nil {
 		return "", errors.New("invalid password")
