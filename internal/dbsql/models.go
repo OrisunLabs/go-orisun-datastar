@@ -97,11 +97,17 @@ type TodoItem struct {
 	TodoID                   string             `json:"todo_id"`
 	UserID                   string             `json:"user_id"`
 	Title                    string             `json:"title"`
-	Completed                bool               `json:"completed"`
 	CompletedAt              pgtype.Timestamptz `json:"completed_at"`
+	CompletedCommitPosition  *int64             `json:"completed_commit_position"`
+	CompletedPreparePosition *int64             `json:"completed_prepare_position"`
+	ReopenedAt               pgtype.Timestamptz `json:"reopened_at"`
+	ReopenedCommitPosition   *int64             `json:"reopened_commit_position"`
+	ReopenedPreparePosition  *int64             `json:"reopened_prepare_position"`
+	Completed                bool               `json:"completed"`
 	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
 	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
 	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
+	EventPositions           []byte             `json:"event_positions"`
 	CreatedAt                pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
 }

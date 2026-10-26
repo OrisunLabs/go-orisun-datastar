@@ -65,10 +65,6 @@ func SystemCommandMetadata(systemActor, action string) CommandMetadata {
 	return CommandMetadata{"audit": audit}
 }
 
-func CommandMetadataWithConsistency(commandMetadata CommandMetadata, consistency []ConsistencyObservation) CommandMetadata {
-	return MergeMetadata(commandMetadata, CommandMetadata{"consistency": MustJSON(consistency)})
-}
-
 func SaveCommandEventsV2(
 	ctx context.Context,
 	saver SaverV2,
@@ -78,7 +74,7 @@ func SaveCommandEventsV2(
 ) (WriteResult, error) {
 	merged := make([]DomainEvent, 0, len(events))
 	for _, event := range events {
-		event.Metadata = MergeMetadata(event.Metadata, CommandMetadataWithConsistency(commandMetadata, consistency))
+		event.Metadata = MergeMetadata(event.Metadata, commandMetadata)
 		merged = append(merged, event)
 	}
 	return saver.SaveEventsV2(ctx, merged, consistency)

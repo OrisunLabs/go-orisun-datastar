@@ -150,3 +150,5 @@ task css
 Commands use narrow ports, bounded latest-event context reads and one `SaveCommandEventsV2` append preserving every independently checked query and position. Orisun owns persisted write contexts; domain ancestry is separate from consistency metadata. Stateful command tests use real in-memory Orisun SQLite through `internal/eventstoretest` even on this PostgreSQL branch.
 
 See [backend architecture patterns and remaining conversions](docs/backend-patterns.md). Existing NATS KV view-state remains supported.
+
+Todo projection persistence uses a transaction-bound repository and an ordered state fold. See [todo projection transactions](docs/todo-projection-transactions.md). Set `TEST_DATABASE_URL` to a disposable PostgreSQL database to run native projection checks with `task test`; tests create and remove isolated schemas.

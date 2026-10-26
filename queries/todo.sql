@@ -5,44 +5,38 @@ WHERE user_id = @user_id
   AND deleted_at IS NULL
 ORDER BY created_at DESC, todo_id DESC;
 
--- name: InsertCreatedTodo :exec
-INSERT INTO todo_items (todo_id, user_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
-VALUES (@todo_id, @user_id, @title, false, null, null, @last_event_commit_position, @last_event_prepare_position, @created_at, @created_at)
-ON CONFLICT (todo_id) DO NOTHING;
+-- name: LockTodoProjection :exec
+SELECT pg_advisory_xact_lock(708904201);
 
--- name: RenameTodo :exec
-UPDATE todo_items
-SET title = @title,
-    last_event_commit_position = @last_event_commit_position,
-    last_event_prepare_position = @last_event_prepare_position,
-    updated_at = @updated_at
-WHERE todo_id = @todo_id;
+-- name: FindProcessedTodoProjection :one
+SELECT todo_id,user_id FROM todo_items
+WHERE (last_event_commit_position,last_event_prepare_position) >= (@commit_position,@prepare_position)
+  AND event_positions ? @position_key::text
+LIMIT 1;
 
--- name: CompleteTodo :exec
-UPDATE todo_items
-SET completed = true,
-    completed_at = @completed_at,
-    last_event_commit_position = @last_event_commit_position,
-    last_event_prepare_position = @last_event_prepare_position,
-    updated_at = @completed_at
-WHERE todo_id = @todo_id;
+-- name: LoadTodoProjection :one
+SELECT todo_id,user_id,title,created_at,updated_at,deleted_at,
+       completed_at,completed_commit_position,completed_prepare_position,
+       reopened_at,reopened_commit_position,reopened_prepare_position,
+       last_event_commit_position,last_event_prepare_position
+FROM todo_items WHERE todo_id = @todo_id FOR UPDATE;
 
--- name: ReopenTodo :exec
-UPDATE todo_items
-SET completed = false,
-    completed_at = null,
-    last_event_commit_position = @last_event_commit_position,
-    last_event_prepare_position = @last_event_prepare_position,
-    updated_at = @updated_at
-WHERE todo_id = @todo_id;
-
--- name: DeleteTodo :exec
-UPDATE todo_items
-SET deleted_at = @deleted_at,
-    last_event_commit_position = @last_event_commit_position,
-    last_event_prepare_position = @last_event_prepare_position,
-    updated_at = @deleted_at
-WHERE todo_id = @todo_id;
+-- name: SaveTodoProjection :execrows
+INSERT INTO todo_items(todo_id,user_id,title,created_at,updated_at,deleted_at,
+ completed_at,completed_commit_position,completed_prepare_position,
+ reopened_at,reopened_commit_position,reopened_prepare_position,
+ last_event_commit_position,last_event_prepare_position,event_positions)
+VALUES (@todo_id,@user_id,@title,@created_at,@updated_at,@deleted_at,
+ @completed_at,@completed_commit_position,@completed_prepare_position,
+ @reopened_at,@reopened_commit_position,@reopened_prepare_position,
+ @last_event_commit_position,@last_event_prepare_position,@event_positions::jsonb)
+ON CONFLICT (todo_id) DO UPDATE SET
+ user_id=excluded.user_id,title=excluded.title,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,
+ completed_at=excluded.completed_at,completed_commit_position=excluded.completed_commit_position,completed_prepare_position=excluded.completed_prepare_position,
+ reopened_at=excluded.reopened_at,reopened_commit_position=excluded.reopened_commit_position,reopened_prepare_position=excluded.reopened_prepare_position,
+ last_event_commit_position=excluded.last_event_commit_position,last_event_prepare_position=excluded.last_event_prepare_position,
+ event_positions=todo_items.event_positions || excluded.event_positions
+WHERE (todo_items.last_event_commit_position,todo_items.last_event_prepare_position) < (excluded.last_event_commit_position,excluded.last_event_prepare_position);
 
 -- name: DeleteTodosByUserID :exec
 DELETE FROM todo_items

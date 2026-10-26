@@ -11,59 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const completeTodo = `-- name: CompleteTodo :exec
-UPDATE todo_items
-SET completed = true,
-    completed_at = $1,
-    last_event_commit_position = $2,
-    last_event_prepare_position = $3,
-    updated_at = $1
-WHERE todo_id = $4
-`
-
-type CompleteTodoParams struct {
-	CompletedAt              pgtype.Timestamptz `json:"completed_at"`
-	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
-	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
-	TodoID                   string             `json:"todo_id"`
-}
-
-func (q *Queries) CompleteTodo(ctx context.Context, arg CompleteTodoParams) error {
-	_, err := q.db.Exec(ctx, completeTodo,
-		arg.CompletedAt,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-		arg.TodoID,
-	)
-	return err
-}
-
-const deleteTodo = `-- name: DeleteTodo :exec
-UPDATE todo_items
-SET deleted_at = $1,
-    last_event_commit_position = $2,
-    last_event_prepare_position = $3,
-    updated_at = $1
-WHERE todo_id = $4
-`
-
-type DeleteTodoParams struct {
-	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
-	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
-	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
-	TodoID                   string             `json:"todo_id"`
-}
-
-func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) error {
-	_, err := q.db.Exec(ctx, deleteTodo,
-		arg.DeletedAt,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-		arg.TodoID,
-	)
-	return err
-}
-
 const deleteTodosByUserID = `-- name: DeleteTodosByUserID :exec
 DELETE FROM todo_items
 WHERE user_id = $1
@@ -74,31 +21,29 @@ func (q *Queries) DeleteTodosByUserID(ctx context.Context, userID string) error 
 	return err
 }
 
-const insertCreatedTodo = `-- name: InsertCreatedTodo :exec
-INSERT INTO todo_items (todo_id, user_id, title, completed, completed_at, deleted_at, last_event_commit_position, last_event_prepare_position, created_at, updated_at)
-VALUES ($1, $2, $3, false, null, null, $4, $5, $6, $6)
-ON CONFLICT (todo_id) DO NOTHING
+const findProcessedTodoProjection = `-- name: FindProcessedTodoProjection :one
+SELECT todo_id,user_id FROM todo_items
+WHERE (last_event_commit_position,last_event_prepare_position) >= ($1,$2)
+  AND event_positions ? $3::text
+LIMIT 1
 `
 
-type InsertCreatedTodoParams struct {
-	TodoID                   string             `json:"todo_id"`
-	UserID                   string             `json:"user_id"`
-	Title                    string             `json:"title"`
-	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
-	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
-	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+type FindProcessedTodoProjectionParams struct {
+	CommitPosition  int64  `json:"commit_position"`
+	PreparePosition int64  `json:"prepare_position"`
+	PositionKey     string `json:"position_key"`
 }
 
-func (q *Queries) InsertCreatedTodo(ctx context.Context, arg InsertCreatedTodoParams) error {
-	_, err := q.db.Exec(ctx, insertCreatedTodo,
-		arg.TodoID,
-		arg.UserID,
-		arg.Title,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-		arg.CreatedAt,
-	)
-	return err
+type FindProcessedTodoProjectionRow struct {
+	TodoID string `json:"todo_id"`
+	UserID string `json:"user_id"`
+}
+
+func (q *Queries) FindProcessedTodoProjection(ctx context.Context, arg FindProcessedTodoProjectionParams) (FindProcessedTodoProjectionRow, error) {
+	row := q.db.QueryRow(ctx, findProcessedTodoProjection, arg.CommitPosition, arg.PreparePosition, arg.PositionKey)
+	var i FindProcessedTodoProjectionRow
+	err := row.Scan(&i.TodoID, &i.UserID)
+	return i, err
 }
 
 const listTodos = `-- name: ListTodos :many
@@ -143,57 +88,118 @@ func (q *Queries) ListTodos(ctx context.Context, userID string) ([]ListTodosRow,
 	return items, nil
 }
 
-const renameTodo = `-- name: RenameTodo :exec
-UPDATE todo_items
-SET title = $1,
-    last_event_commit_position = $2,
-    last_event_prepare_position = $3,
-    updated_at = $4
-WHERE todo_id = $5
+const loadTodoProjection = `-- name: LoadTodoProjection :one
+SELECT todo_id,user_id,title,created_at,updated_at,deleted_at,
+       completed_at,completed_commit_position,completed_prepare_position,
+       reopened_at,reopened_commit_position,reopened_prepare_position,
+       last_event_commit_position,last_event_prepare_position
+FROM todo_items WHERE todo_id = $1 FOR UPDATE
 `
 
-type RenameTodoParams struct {
+type LoadTodoProjectionRow struct {
+	TodoID                   string             `json:"todo_id"`
+	UserID                   string             `json:"user_id"`
 	Title                    string             `json:"title"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
+	CompletedAt              pgtype.Timestamptz `json:"completed_at"`
+	CompletedCommitPosition  *int64             `json:"completed_commit_position"`
+	CompletedPreparePosition *int64             `json:"completed_prepare_position"`
+	ReopenedAt               pgtype.Timestamptz `json:"reopened_at"`
+	ReopenedCommitPosition   *int64             `json:"reopened_commit_position"`
+	ReopenedPreparePosition  *int64             `json:"reopened_prepare_position"`
 	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
 	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
-	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
-	TodoID                   string             `json:"todo_id"`
 }
 
-func (q *Queries) RenameTodo(ctx context.Context, arg RenameTodoParams) error {
-	_, err := q.db.Exec(ctx, renameTodo,
-		arg.Title,
-		arg.LastEventCommitPosition,
-		arg.LastEventPreparePosition,
-		arg.UpdatedAt,
-		arg.TodoID,
+func (q *Queries) LoadTodoProjection(ctx context.Context, todoID string) (LoadTodoProjectionRow, error) {
+	row := q.db.QueryRow(ctx, loadTodoProjection, todoID)
+	var i LoadTodoProjectionRow
+	err := row.Scan(
+		&i.TodoID,
+		&i.UserID,
+		&i.Title,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.CompletedAt,
+		&i.CompletedCommitPosition,
+		&i.CompletedPreparePosition,
+		&i.ReopenedAt,
+		&i.ReopenedCommitPosition,
+		&i.ReopenedPreparePosition,
+		&i.LastEventCommitPosition,
+		&i.LastEventPreparePosition,
 	)
-	return err
+	return i, err
 }
 
-const reopenTodo = `-- name: ReopenTodo :exec
-UPDATE todo_items
-SET completed = false,
-    completed_at = null,
-    last_event_commit_position = $1,
-    last_event_prepare_position = $2,
-    updated_at = $3
-WHERE todo_id = $4
+const lockTodoProjection = `-- name: LockTodoProjection :exec
+SELECT pg_advisory_xact_lock(708904201)
 `
 
-type ReopenTodoParams struct {
-	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
-	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
-	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
-	TodoID                   string             `json:"todo_id"`
+func (q *Queries) LockTodoProjection(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, lockTodoProjection)
+	return err
 }
 
-func (q *Queries) ReopenTodo(ctx context.Context, arg ReopenTodoParams) error {
-	_, err := q.db.Exec(ctx, reopenTodo,
+const saveTodoProjection = `-- name: SaveTodoProjection :execrows
+INSERT INTO todo_items(todo_id,user_id,title,created_at,updated_at,deleted_at,
+ completed_at,completed_commit_position,completed_prepare_position,
+ reopened_at,reopened_commit_position,reopened_prepare_position,
+ last_event_commit_position,last_event_prepare_position,event_positions)
+VALUES ($1,$2,$3,$4,$5,$6,
+ $7,$8,$9,
+ $10,$11,$12,
+ $13,$14,$15::jsonb)
+ON CONFLICT (todo_id) DO UPDATE SET
+ user_id=excluded.user_id,title=excluded.title,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,
+ completed_at=excluded.completed_at,completed_commit_position=excluded.completed_commit_position,completed_prepare_position=excluded.completed_prepare_position,
+ reopened_at=excluded.reopened_at,reopened_commit_position=excluded.reopened_commit_position,reopened_prepare_position=excluded.reopened_prepare_position,
+ last_event_commit_position=excluded.last_event_commit_position,last_event_prepare_position=excluded.last_event_prepare_position,
+ event_positions=todo_items.event_positions || excluded.event_positions
+WHERE (todo_items.last_event_commit_position,todo_items.last_event_prepare_position) < (excluded.last_event_commit_position,excluded.last_event_prepare_position)
+`
+
+type SaveTodoProjectionParams struct {
+	TodoID                   string             `json:"todo_id"`
+	UserID                   string             `json:"user_id"`
+	Title                    string             `json:"title"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
+	CompletedAt              pgtype.Timestamptz `json:"completed_at"`
+	CompletedCommitPosition  *int64             `json:"completed_commit_position"`
+	CompletedPreparePosition *int64             `json:"completed_prepare_position"`
+	ReopenedAt               pgtype.Timestamptz `json:"reopened_at"`
+	ReopenedCommitPosition   *int64             `json:"reopened_commit_position"`
+	ReopenedPreparePosition  *int64             `json:"reopened_prepare_position"`
+	LastEventCommitPosition  int64              `json:"last_event_commit_position"`
+	LastEventPreparePosition int64              `json:"last_event_prepare_position"`
+	EventPositions           []byte             `json:"event_positions"`
+}
+
+func (q *Queries) SaveTodoProjection(ctx context.Context, arg SaveTodoProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveTodoProjection,
+		arg.TodoID,
+		arg.UserID,
+		arg.Title,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.DeletedAt,
+		arg.CompletedAt,
+		arg.CompletedCommitPosition,
+		arg.CompletedPreparePosition,
+		arg.ReopenedAt,
+		arg.ReopenedCommitPosition,
+		arg.ReopenedPreparePosition,
 		arg.LastEventCommitPosition,
 		arg.LastEventPreparePosition,
-		arg.UpdatedAt,
-		arg.TodoID,
+		arg.EventPositions,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

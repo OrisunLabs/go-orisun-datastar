@@ -40,6 +40,7 @@ type appComponents struct {
 	authUsers        *auth.AuthUserStore
 	verifications    *auth.VerificationStore
 	todoReadModel    *todo.ReadModel
+	todoProjection   *todo.PostgreSQLProjectionRepository
 	profileReadModel *profile.ReadModel
 	checkpointer     eventstore.Checkpointer
 	emailSender      email.Sender
@@ -221,6 +222,7 @@ func newAppComponents(db *pgxpool.Pool, store *eventstore.EmbeddedOrisun, cfg co
 		authUsers:        authUsers,
 		verifications:    verifications,
 		todoReadModel:    todoReadModel,
+		todoProjection:   todo.NewPostgreSQLProjectionRepository(db),
 		profileReadModel: profileReadModel,
 		checkpointer:     eventstore.NewPostgresCheckpointer(db),
 		emailSender:      email.LogSender{Logger: logger},
@@ -277,7 +279,7 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "todo read model",
 			create: func() (eventHandler, error) {
-				return todo.NewTodoReadModelEventHandler(store, components.checkpointer, components.todoReadModel, bus, logger)
+				return todo.NewTodoReadModelEventHandler(store, components.checkpointer, components.todoProjection, bus, logger)
 			},
 		},
 	}

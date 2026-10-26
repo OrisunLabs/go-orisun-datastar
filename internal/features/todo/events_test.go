@@ -67,15 +67,15 @@ func TestTodoCommandsRejectMalformedAuthority(t *testing.T) {
 					identityData = scopes
 				}
 				if corrupt.Data[TodoUserIDField] == user && identityData[identityField] == id {
-					_, err := CompleteTodoCommandHandler(t.Context(), CompleteTodoCommand{UserID: user, TodoID: id}, store, store)
+					err := CompleteTodosCommandHandler(t.Context(), CompleteTodosCommand{UserID: user, Operations: map[string]string{id: uuidv7.NewString()}}, store, store)
 					if !errors.Is(err, eventstore.ErrInvalidEvent) {
 						t.Fatalf("got %v, want invalid event", err)
 					}
 				}
 
 				// The same contract must fail before any projection write or publication.
-				handler := &TodoReadModelEventHandler{}
-				if err := handler.handle(t.Context(), eventstore.ResolvedEvent{Event: corrupt}); !errors.Is(err, eventstore.ErrInvalidEvent) {
+				handler := &TodoReadModelEventHandler{repository: &projectionTestRepository{}}
+				if err := handler.handle(t.Context(), eventstore.ResolvedEvent{Position: eventstore.Position{Commit: 1, Prepare: 1}, Event: corrupt}); !errors.Is(err, eventstore.ErrInvalidEvent) {
 					t.Fatalf("projection accepted malformed event: %v", err)
 				}
 			})
@@ -86,20 +86,21 @@ func TestTodoCommandsRejectMalformedAuthority(t *testing.T) {
 func TestTodoLifecycleUsesCanonicalEventContracts(t *testing.T) {
 	user := uuidv7.NewString()
 	store := eventstoretest.New(t)
-	created, err := CreateTodoCommandHandler(t.Context(), CreateTodoCommand{UserID: user, Title: "  First title  "}, store)
+	createdID := uuidv7.NewString()
+	err := CreateTodosCommandHandler(t.Context(), CreateTodosCommand{UserID: user, Titles: map[string]string{createdID: "  First title  "}}, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = RenameTodoCommandHandler(t.Context(), RenameTodoCommand{UserID: user, TodoID: created.TodoID, Title: "Next title"}, store, store); err != nil {
+	if err = RenameTodosCommandHandler(t.Context(), RenameTodosCommand{UserID: user, Operations: map[string]TodoRename{createdID: {EventID: uuidv7.NewString(), Title: "Next title", ExpectedTitle: "First title"}}}, store, store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = CompleteTodoCommandHandler(t.Context(), CompleteTodoCommand{UserID: user, TodoID: created.TodoID}, store, store); err != nil {
+	if err = CompleteTodosCommandHandler(t.Context(), CompleteTodosCommand{UserID: user, Operations: map[string]string{createdID: uuidv7.NewString()}}, store, store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ReopenTodoCommandHandler(t.Context(), ReopenTodoCommand{UserID: user, TodoID: created.TodoID}, store, store); err != nil {
+	if err = ReopenTodosCommandHandler(t.Context(), ReopenTodosCommand{UserID: user, Operations: map[string]string{createdID: uuidv7.NewString()}}, store, store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = DeleteTodoCommandHandler(t.Context(), DeleteTodoCommand{UserID: user, TodoID: created.TodoID}, store, store); err != nil {
+	if err = DeleteTodosCommandHandler(t.Context(), DeleteTodosCommand{UserID: user, Operations: map[string]string{createdID: uuidv7.NewString()}}, store, store); err != nil {
 		t.Fatal(err)
 	}
 	events, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, TodoReadModelEventHandlerQuery())
@@ -108,7 +109,7 @@ func TestTodoLifecycleUsesCanonicalEventContracts(t *testing.T) {
 	}
 	for _, event := range events {
 		facts, err := decodeTodoEvent(event.Event)
-		if err != nil || facts.todoID != created.TodoID || facts.userID != user {
+		if err != nil || facts.todoID != createdID || facts.userID != user {
 			t.Fatalf("facts=%#v error=%v", facts, err)
 		}
 		if _, exists := event.Event.Data["scope"]; exists {
@@ -125,14 +126,14 @@ func TestTodoLifecycleUsesCanonicalEventContracts(t *testing.T) {
 			if hasScopes {
 				t.Fatal("todo root must omit scopes")
 			}
-		} else if len(scopes) != 1 || scopes[TodoCreatedIDField] != created.TodoID {
+		} else if len(scopes) != 1 || scopes[TodoCreatedIDField] != createdID {
 			t.Fatalf("unexpected todo ancestry: %#v", scopes)
 		}
 		if _, exists := event.Event.Data["todoId"]; exists {
 			t.Fatal("entity ID duplicated in payload")
 		}
 	}
-	if _, err := CompleteTodoCommandHandler(t.Context(), CompleteTodoCommand{UserID: user, TodoID: created.TodoID}, store, store); !errors.Is(err, eventstore.ErrNotFound) {
+	if err := CompleteTodosCommandHandler(t.Context(), CompleteTodosCommand{UserID: user, Operations: map[string]string{createdID: uuidv7.NewString()}}, store, store); !errors.Is(err, eventstore.ErrNotFound) {
 		t.Fatalf("deleted todo: %v", err)
 	}
 }

@@ -97,21 +97,32 @@ CREATE INDEX IF NOT EXISTS profile_stats_user_id_idx ON profile_stats (user_id);
 CREATE INDEX IF NOT EXISTS profile_stats_username_idx ON profile_stats (username);
 
 CREATE TABLE IF NOT EXISTS todo_items (
-    todo_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    completed BOOLEAN NOT NULL DEFAULT false,
-    completed_at TIMESTAMPTZ,
-    deleted_at TIMESTAMPTZ,
-    last_event_commit_position BIGINT NOT NULL,
-    last_event_prepare_position BIGINT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+ todo_id TEXT PRIMARY KEY,
+ user_id TEXT NOT NULL,
+ title TEXT NOT NULL,
+ completed_at TIMESTAMPTZ,
+ completed_commit_position BIGINT,
+ completed_prepare_position BIGINT,
+ reopened_at TIMESTAMPTZ,
+ reopened_commit_position BIGINT,
+ reopened_prepare_position BIGINT,
+ completed BOOLEAN GENERATED ALWAYS AS (
+  completed_commit_position IS NOT NULL AND
+  (reopened_commit_position IS NULL OR
+   (completed_commit_position,completed_prepare_position) > (reopened_commit_position,reopened_prepare_position))
+ ) STORED NOT NULL,
+ deleted_at TIMESTAMPTZ,
+ last_event_commit_position BIGINT NOT NULL CHECK(last_event_commit_position >= 0),
+ last_event_prepare_position BIGINT NOT NULL CHECK(last_event_prepare_position >= 0),
+ event_positions JSONB NOT NULL DEFAULT '{}'::jsonb CHECK(jsonb_typeof(event_positions)='object'),
+ created_at TIMESTAMPTZ NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL,
+ CHECK ((completed_at IS NULL)=(completed_commit_position IS NULL) AND (completed_at IS NULL)=(completed_prepare_position IS NULL)),
+ CHECK ((reopened_at IS NULL)=(reopened_commit_position IS NULL) AND (reopened_at IS NULL)=(reopened_prepare_position IS NULL)),
+ CHECK (reopened_at IS NULL OR completed_at IS NOT NULL),
+ CHECK (completed_commit_position IS NULL OR (completed_commit_position>=0 AND completed_prepare_position>=0 AND (completed_commit_position,completed_prepare_position)<=(last_event_commit_position,last_event_prepare_position))),
+ CHECK (reopened_commit_position IS NULL OR (reopened_commit_position>=0 AND reopened_prepare_position>=0 AND (reopened_commit_position,reopened_prepare_position)<=(last_event_commit_position,last_event_prepare_position)))
 );
-
-CREATE INDEX IF NOT EXISTS todo_items_user_active_created_idx
-    ON todo_items (user_id, created_at, todo_id)
-    WHERE deleted_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS todo_items_user_completed_idx
-    ON todo_items (user_id, completed);
+CREATE INDEX IF NOT EXISTS todo_items_user_active_created_idx ON todo_items(user_id,created_at,todo_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS todo_items_user_completed_idx ON todo_items(user_id,completed);
+CREATE INDEX IF NOT EXISTS todo_items_projection_position_idx ON todo_items(last_event_commit_position,last_event_prepare_position);

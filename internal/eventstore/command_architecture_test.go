@@ -51,6 +51,21 @@ func TestCommandAuthorityHelpersStayWithinOwningSlice(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if strings.HasSuffix(root, "features/todo") {
+			expected := map[string]bool{"CreateTodosCommandHandler": true, "RenameTodosCommandHandler": true, "CompleteTodosCommandHandler": true, "ReopenTodosCommandHandler": true, "DeleteTodosCommandHandler": true}
+			for name := range functions {
+				if ast.IsExported(name) && strings.HasSuffix(name, "CommandHandler") {
+					if !expected[name] {
+						t.Errorf("todo command %s bypasses the batch-only public API", name)
+					}
+					delete(expected, name)
+				}
+			}
+			for name := range expected {
+				t.Errorf("missing batch todo capability %s", name)
+			}
+		}
+
 		sensitive := map[string]bool{}
 		calls := map[string][]string{}
 		for name, function := range functions {
