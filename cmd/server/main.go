@@ -244,10 +244,22 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 				return auth.NewRegistrationOTPToBeGeneratedEventHandler(store, components.checkpointer, store, store, logger)
 			},
 		},
+		{name: "registration execution", create: func() (eventHandler, error) {
+			return auth.NewRegistrationExecutionEventHandler(store, components.checkpointer, store, store, components.piiKeys, logger)
+		}},
+		{name: "password reset execution", create: func() (eventHandler, error) {
+			return auth.NewPasswordResetExecutionEventHandler(store, components.checkpointer, store, store, logger)
+		}},
+		{
+			name: "password reset completion",
+			create: func() (eventHandler, error) {
+				return auth.NewPasswordResetCompletionEventHandler(store, components.checkpointer, store, store, logger)
+			},
+		},
 		{
 			name: "registration completion",
 			create: func() (eventHandler, error) {
-				return auth.NewRegistrationCompletionEventHandler(store, components.checkpointer, store, store, components.piiKeys, logger)
+				return auth.NewRegistrationCompletionEventHandler(store, components.checkpointer, store, store, logger)
 			},
 		},
 		{
@@ -268,6 +280,10 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authProjection, components.piiKeys, authProfileSource(), authUserInvalidator{publisher: bus}, logger)
 			},
 		},
+		{name: "account deletion completion", create: func() (eventHandler, error) {
+			return auth.NewAccountDeletionCompletionEventHandler(store, components.checkpointer, store, store, logger)
+		}},
+
 		{
 			name: "account deletion",
 			create: func() (eventHandler, error) {

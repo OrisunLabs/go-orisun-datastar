@@ -14,14 +14,19 @@ PII lookup indexes use protected blind-index fields, not plaintext event fields.
 | `user_registered_id` | `userRegisteredId` | `UserRegistered` | User existence/context loads. |
 | `email_otp_generated_id` | `emailVerificationOTPGeneratedId` | `EmailVerificationOTPGenerated` | OTP send/validation context lookup. |
 | `otp_ancestry` | `scopes.emailVerificationOTPGeneratedId` | `EmailVerificationOTPValidated`, `EmailVerificationOTPSent` | OTP sent/validated idempotency. |
+| `password_reset_authorized_id` | `passwordResetAuthorizedId` | `PasswordResetAuthorized` | Exact frozen reset authorization. |
+| `password_reset_operation` | `operationId` | `PasswordResetAuthorized` | Future domain-operation collision guard. |
+| `password_reset_completion` | `scopes.passwordResetAuthorizedId`, `scopes.passwordChangedId` | `PasswordResetCompleted` | Exact workflow completion receipt. |
 | `password_reset_requested_id` | `passwordResetRequestedId` | `PasswordResetRequested` | Password reset email/send completion context. |
-| `reset_ancestry` | `scopes.passwordResetRequestedId` | `PasswordResetEmailSent`, `PasswordResetCompleted` | Password reset idempotency and completion. |
-| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendants excluding registration OTPs | Per-user contexts and projections; latest password-change/reset-completion authority for password-authorized mutations. |
+| `reset_ancestry` | `scopes.passwordResetRequestedId` | `PasswordResetEmailSent`, `PasswordResetAuthorized`, `PasswordResetCompleted` | Password reset idempotency and completion. |
+| `auth_user_ancestry` | `scopes.userRegisteredId` | Auth/account descendants excluding registration OTPs and reset completion | Per-user contexts and projections; latest effective password-change authority for password-authorized mutations. |
 | `profile_owner` | `userId` | Profile image/header/bio events | Cross-domain user reference for latest profile authority and consistency guards. |
 | `todo_created` | `todoCreatedId`, `userId` | `TodoCreated` | Creation identity, ownership and collision guard. |
 | `todo_ancestry` | `scopes.todoCreatedId`, `userId` | `TodoRenamed`, `TodoCompleted`, `TodoReopened`, `TodoDeleted` | Per-todo authority, ownership and idempotency context. |
-| `account_deletion_requested_id` | `accountDeletionRequestedId` | `AccountDeletionRequested` | Account deletion completion lookup. |
-| `deletion_ancestry` | `scopes.accountDeletionRequestedId` | `AccountDeleted` | Account deletion idempotency. |
+| `account_deletion_requested_id` | `accountDeletionRequestedId` | `AccountDeletionRequested` | Exact deletion-request identity/collision lookup. |
+| `account_deletion_operation` | `operationId` | `AccountDeletionRequested` | Frozen operation collision guards and completion correlation. |
+| `account_deletion_effect_completion` | `scopes.accountDeletedId` | `AccountDeletionCompleted` | Exact domain-effect completion receipt. |
+| `deletion_ancestry` | `scopes.accountDeletionRequestedId` | `AccountDeletionCompleted` | Workflow receipt lookup by request. |
 | `login_attempt_recorded_id` | `loginAttemptRecordedId` | `LoginAttemptRecorded` | Login-attempt append subset/idempotency. |
 | `login_attempt_identifier_hash` | `attemptedIdentifierHash` | `LoginAttemptRecorded` | Security audit lookup by attempted email/username blind index. |
 | `login_attempt_ip_hash` | `ipAddressHash` | `LoginAttemptRecorded` | Security audit lookup by IP blind index. |
@@ -39,4 +44,8 @@ Atomic todo bulk contexts batch the existing five per-todo lifecycle criteria fo
 
 Todo creation now batches `TodoCreated` envelope-ID collision/retry criteria through `CreateTodos`. `RenameTodos` batches the same five lifecycle predicates as other todo mutations plus `TodoRenamed` envelope-ID receipts, and checks expected titles from the decoded latest facts. Single-item routes use these same batch handlers and index shapes; there are no separate single-item command queries.
 
-Password changes batch `UserRegistered` by `userRegisteredId` with `PasswordChanged` and `PasswordResetCompleted` by `scopes.userRegisteredId`. Deletion requests batch those same three password-authority criteria with their existing deletion request/completion criteria. Every criterion includes `eventType`. The `user_registered_id` and `auth_user_ancestry` indexes cover these predicates; the unchanged returned combined observation guards the append against either kind of concurrent credential update. No additional index is needed.
+Password changes batch `UserRegistered` by `userRegisteredId` with `PasswordChanged` by `scopes.userRegisteredId`. Deletion requests batch those same two password-authority criteria with their existing deletion-request/effective-deletion criteria. Every criterion includes `eventType`. The `user_registered_id` and `auth_user_ancestry` indexes cover these predicates; the unchanged returned combined observation guards the append against either kind of concurrent credential update. No additional index is needed.
+
+Password reset authorization observes its request, accepted user, prior authorization and completion together. A new authorization takes a separate operation-collision observation. Domain password assignment observes only registration, its exact `PasswordChanged` identity and the latest effective password. Reset completion observes authorization by operation ID, the exact effective change and its completion receipt in one query. Registration completion discovers pending registration by planned `userId`, then checks its authorization and exact accepted fact with separate observations. Every observation retains its original query and position.
+
+Account deletion request allocation adds a separate exact request/operation collision observation. Independent domain deletion observes accepted-user authority plus exact operation and latest per-user `AccountDeleted` facts. Completion batches request-by-`operationId`, effective deletion by envelope ID, and completion-by-`scopes.accountDeletedId`. Built-in envelope indexes and the indexes above cover these queries; `AccountDeleted` has no request ancestry.

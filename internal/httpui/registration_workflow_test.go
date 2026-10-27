@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -94,9 +95,25 @@ func TestHTTPRegistrationUsesPendingIdentityUntilOTPValidated(t *testing.T) {
 		t.Fatal("wrong OTP registered a user")
 	}
 	response = submit(app.validateEmail, "/register/"+id+"/validate-email", url.Values{"otp": {value.OTPCode}}, id)
-	if !strings.Contains(response.Body.String(), "/login") || len(signupFacts(t, store, auth.UserRegistered)) != 1 || len(signupFacts(t, store, auth.UserRegistrationCompleted)) != 1 {
-		t.Fatalf("verified signup did not complete: %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), "/login") || len(signupFacts(t, store, auth.EmailVerificationOTPValidated)) != 1 || len(signupFacts(t, store, auth.UserRegistered)) != 0 || len(signupFacts(t, store, auth.UserRegistrationCompleted)) != 0 {
+		t.Fatalf("HTTP executed beyond validation: %s", response.Body.String())
 	}
+	started, err := auth.DecodeUserRegistrationStartedEvent(pending[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := auth.DecodeEmailVerificationOTPValidatedEvent(signupFacts(t, store, auth.EmailVerificationOTPValidated)[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedAt, _ := time.Parse(time.RFC3339Nano, validated.ValidatedAt)
+	if _, err := auth.RegisterUserCommandHandler(t.Context(), auth.RegisterUserCommand{UserRegisteredID: started.UserID, RegistrationDetails: started.RegistrationDetails, EmailVerifiedAt: verifiedAt}, store, store, keys); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.CompleteUserRegistrationCommandHandler(t.Context(), auth.CompleteUserRegistrationCommand{UserRegisteredID: started.UserID}, store, store); err != nil {
+		t.Fatal(err)
+	}
+
 	submit(app.validateEmail, "/register/"+id+"/validate-email", url.Values{"otp": {value.OTPCode}}, id)
 	if len(signupFacts(t, store, auth.UserRegistered)) != 1 || len(signupFacts(t, store, auth.UserRegistrationCompleted)) != 1 {
 		t.Fatal("HTTP retry duplicated registration")

@@ -5,7 +5,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
@@ -16,12 +15,12 @@ import (
 func TestPasswordResetProjectsDecryptedTokenAndRejectsTampering(t *testing.T) {
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
 	store := eventstoretest.New(t)
-	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "reset-user", Email: "reset@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: testAuthHash(t), EmailVerifiedAt: time.Unix(1, 0).UTC(), FirstName: "", LastName: ""}, store, store, keys)
+	registered, err := RegisterUserCommandHandler(t.Context(), directRegistrationCommand(t, uuidv7.NewString(), "reset-user", "reset@example.com", keys), store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
-	users := resetTestUser{user: views.User{UserRegisteredID: registered.UserRegisteredID, Email: registered.Email}}
-	result, err := RequestPasswordResetCommandHandler(t.Context(), RequestPasswordResetCommand{EmailAddress: registered.Email}, users, store, store, keys)
+	users := resetTestUser{user: views.User{UserRegisteredID: registered.UserRegisteredID, Email: "reset@example.com"}}
+	result, err := RequestPasswordResetCommandHandler(t.Context(), RequestPasswordResetCommand{EmailAddress: "reset@example.com"}, users, store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}

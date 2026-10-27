@@ -42,15 +42,22 @@ func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAc
 	if err := bcrypt.CompareHashAndPassword([]byte(model.passwordHash), []byte(command.Password)); err != nil {
 		return "", errors.New("invalid password")
 	}
+	if model.requestedID != "" && model.requestedAuthUserID != command.User.ID {
+		return "", eventstore.ErrConflict
+	}
 	if model.deleted || model.requestedID != "" {
 		return model.requestedID, nil
 	}
-	requestID := uuidv7.NewString()
-	event, err := NewAccountDeletionRequestedEvent(requestID, time.Now(), command.User.ID, command.User.UserRegisteredID, nil)
+	requestID, operationID := uuidv7.NewString(), uuidv7.NewString()
+	collision, err := loadRequestAccountDeletionCollisionContext(ctx, requestID, operationID, retriever)
 	if err != nil {
 		return "", err
 	}
-	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
+	event, err := NewAccountDeletionRequestedEvent(requestID, time.Now(), command.User.ID, command.User.UserRegisteredID, operationID, nil)
+	if err != nil {
+		return "", err
+	}
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}, collision}); err != nil {
 		return "", err
 	}
 	return requestID, nil
@@ -62,7 +69,8 @@ type accountDeletionRequestContext struct {
 	passwordPosition    *eventstore.Position
 	requestedID         string
 	requestedAuthUserID string
-	deletedRequestID    string
+	operationID         string
+	deletedOperationID  string
 	deletedAuthUserID   string
 	deleted             bool
 	position            eventstore.Position
@@ -71,7 +79,7 @@ type accountDeletionRequestContext struct {
 }
 
 func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID string, retriever eventstore.LatestRetriever) (*accountDeletionRequestContext, error) {
-	query := requestAccountDeletionCombineQueries(requestAccountDeletionUserRegisteredQuery(userRegisteredID), requestAccountDeletionAccountDeletionRequestedByUserQuery(userRegisteredID), requestAccountDeletionAccountDeletedByUserQuery(userRegisteredID), requestAccountDeletionPasswordChangedByUserQuery(userRegisteredID), requestAccountDeletionPasswordResetCompletedByUserQuery(userRegisteredID))
+	query := requestAccountDeletionCombineQueries(requestAccountDeletionUserRegisteredQuery(userRegisteredID), requestAccountDeletionAccountDeletionRequestedByUserQuery(userRegisteredID), requestAccountDeletionAccountDeletedByUserQuery(userRegisteredID), requestAccountDeletionPasswordChangedByUserQuery(userRegisteredID))
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
@@ -104,19 +112,7 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 				model.passwordPosition = &position
 				model.passwordHash = value.PasswordHash
 			}
-		case PasswordResetCompleted:
-			value, err := DecodePasswordResetCompletedEvent(resolved.Event)
-			if err != nil {
-				return nil, err
-			}
-			if value.Scopes.UserRegisteredID != userRegisteredID {
-				return nil, eventstore.ErrInvalidEvent
-			}
-			if model.passwordPosition == nil || resolved.Position.After(*model.passwordPosition) {
-				position := resolved.Position
-				model.passwordPosition = &position
-				model.passwordHash = value.PasswordHash
-			}
+
 		case AccountDeletionRequested:
 			value, err := DecodeAccountDeletionRequestedEvent(resolved.Event)
 			if err != nil {
@@ -127,6 +123,7 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 			}
 			model.requestedID = value.AccountDeletionRequestedID
 			model.requestedAuthUserID = value.AuthUserID
+			model.operationID = value.OperationID
 		case AccountDeleted:
 			value, err := DecodeAccountDeletedEvent(resolved.Event)
 			if err != nil {
@@ -135,14 +132,14 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 			if value.Scopes.UserRegisteredID != userRegisteredID {
 				return nil, eventstore.ErrInvalidEvent
 			}
-			model.deletedRequestID = value.Scopes.AccountDeletionRequestedID
+			model.deletedOperationID = value.AccountDeletedID
 			model.deletedAuthUserID = value.AuthUserID
 			model.deleted = true
 		default:
 			return nil, eventstore.ErrInvalidEvent
 		}
 	}
-	if model.deleted && (model.deletedRequestID != model.requestedID || model.deletedAuthUserID != model.requestedAuthUserID) {
+	if model.deleted && (model.deletedOperationID != model.operationID || model.deletedAuthUserID != model.requestedAuthUserID) {
 		return nil, errors.New("account deleted scope does not match request context")
 	}
 	return model, nil
@@ -184,9 +181,21 @@ func requestAccountDeletionPasswordChangedByUserQuery(userRegisteredID string) e
 	}}}}
 }
 
-func requestAccountDeletionPasswordResetCompletedByUserQuery(userRegisteredID string) eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: PasswordResetCompleted},
-		{Key: ScopeUserRegisteredIDField, Value: userRegisteredID},
-	}}}}
+func loadRequestAccountDeletionCollisionContext(ctx context.Context, requestID, operationID string, retriever eventstore.LatestRetriever) (eventstore.ConsistencyObservation, error) {
+	query := requestAccountDeletionCollisionQuery(requestID, operationID)
+	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
+	if err != nil {
+		return eventstore.ConsistencyObservation{}, err
+	}
+	if len(eventstore.EventsFromLatest(latest.Results)) != 0 {
+		return eventstore.ConsistencyObservation{}, eventstore.ErrConflict
+	}
+	return eventstore.ConsistencyObservation{Query: query, Position: latest.ContextPosition}, nil
+}
+func requestAccountDeletionCollisionQuery(requestID, operationID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeletionRequested}, {Key: AccountDeletionRequestedIDField, Value: requestID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeletionRequested}, {Key: "operationId", Value: operationID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: "eventId", Value: operationID}}},
+	}}
 }

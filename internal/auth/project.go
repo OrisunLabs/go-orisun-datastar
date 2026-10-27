@@ -89,7 +89,7 @@ func ProjectBatch(ctx context.Context, events []eventstore.ResolvedEvent, reposi
 }
 func authProjectionType(kind string, source ProfileSource) bool {
 	switch kind {
-	case UserRegistered, UserNameChanged, PasswordResetRequested, PasswordResetCompleted, PasswordChanged:
+	case UserRegistered, UserNameChanged, PasswordResetRequested, PasswordChanged:
 		return true
 	}
 	return slices.Contains(source.EventTypes, kind)
@@ -154,12 +154,6 @@ func decodeAuthChange(ctx context.Context, resolved eventstore.ResolvedEvent, ke
 		return NameInput{v.Scopes.UserRegisteredID, name}, err
 	case PasswordChanged:
 		v, err := DecodePasswordChangedEvent(e)
-		if err != nil {
-			return nil, err
-		}
-		return PasswordInput{v.Scopes.UserRegisteredID, v.PasswordHash}, nil
-	case PasswordResetCompleted:
-		v, err := DecodePasswordResetCompletedEvent(e)
 		if err != nil {
 			return nil, err
 		}

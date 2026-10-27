@@ -2,125 +2,117 @@ package auth
 
 import (
 	"context"
-	"errors"
+	"time"
+
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"time"
 )
 
 type CompleteAccountDeletionCommand struct {
-	AccountDeletionRequestedID string
-	UserRegisteredID           string
-	AuthUserID                 string
-	Metadata                   CommandMetadata
+	AccountDeletedID string
+	Metadata         CommandMetadata
 }
 
-func CompleteAccountDeletionCommandHandler(ctx context.Context, command CompleteAccountDeletionCommand, data AccountDataDeletionPort, keys AccountPiiKeyPort, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
+func CompleteAccountDeletionCommandHandler(ctx context.Context, command CompleteAccountDeletionCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
-	model, err := loadAccountDeletionCompletionContext(ctx, command.AccountDeletionRequestedID, command.UserRegisteredID, retriever)
+	model, err := loadCompleteAccountDeletionContext(ctx, command.AccountDeletedID, retriever)
 	if err != nil {
 		return err
 	}
-	if !model.requested {
-		return errors.New("account deletion request event not found")
-	}
-	if model.userRegisteredID != command.UserRegisteredID || model.authUserID != command.AuthUserID {
-		return errors.New("account deletion request does not match command identity")
-	}
-	if model.deleted {
+	if model.completed {
 		return nil
 	}
-	deletedID := uuidv7.NewString()
-	event, err := NewAccountDeletedEvent(deletedID, time.Now(), model.requestedID, model.authUserID, model.userRegisteredID, nil)
+	r := model.request
+	event, err := NewAccountDeletionCompletedEvent(uuidv7.NewString(), time.Now(), r.AccountDeletionRequestedID, r.OperationID, r.AuthUserID, r.Scopes.UserRegisteredID, nil)
 	if err != nil {
 		return err
 	}
-	if err := data.DeleteAccountData(ctx, model.userRegisteredID); err != nil {
-		return err
-	}
-	if err := keys.DestroySubjectKey(ctx, model.userRegisteredID); err != nil {
-		return err
-	}
-
 	_, err = eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}})
 	return err
 }
 
-type accountDeletionCompletionContext struct {
-	requestedID             string
-	userRegisteredID        string
-	authUserID              string
-	deletedRequestID        string
-	deletedUserRegisteredID string
-	deletedAuthUserID       string
-	requested               bool
-	deleted                 bool
-	position                eventstore.Position
-	events                  []eventstore.ResolvedEvent
-	query                   eventstore.Query
+type completeAccountDeletionContext struct {
+	request   AccountDeletionRequestedEvent
+	completed bool
+	query     eventstore.Query
+	position  eventstore.Position
 }
 
-func loadAccountDeletionCompletionContext(ctx context.Context, requestID, userRegisteredID string, retriever eventstore.LatestRetriever) (*accountDeletionCompletionContext, error) {
-	query := completeAccountDeletionCombineQueries(completeAccountDeletionAccountDeletionRequestedQuery(requestID), completeAccountDeletionAccountDeletedByRequestQuery(requestID))
+func loadCompleteAccountDeletionContext(ctx context.Context, id string, retriever eventstore.LatestRetriever) (*completeAccountDeletionContext, error) {
+	if !validAuthID(id) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	query := completeAccountDeletionQuery(id)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
-	model := &accountDeletionCompletionContext{requestedID: requestID, userRegisteredID: userRegisteredID, position: latest.ContextPosition, events: eventstore.EventsFromLatest(latest.Results), query: query}
-	for _, resolved := range model.events {
-		switch resolved.Event.EventType {
+	model := &completeAccountDeletionContext{query: query, position: latest.ContextPosition}
+	var effect AccountDeletedEvent
+	var receipt *AccountDeletionCompletedEvent
+	var requestPosition, effectPosition, receiptPosition eventstore.Position
+	for _, e := range eventstore.EventsFromLatest(latest.Results) {
+		switch e.Event.EventType {
 		case AccountDeletionRequested:
-			requested, err := DecodeAccountDeletionRequestedEvent(resolved.Event)
+			v, err := DecodeAccountDeletionRequestedEvent(e.Event)
 			if err != nil {
 				return nil, err
 			}
-			if requested.AccountDeletionRequestedID != requestID || requested.Scopes.UserRegisteredID != userRegisteredID {
-				return nil, errors.New("account deletion request does not match completion context")
+			if v.OperationID != id {
+				return nil, eventstore.ErrInvalidEvent
 			}
-			model.requestedID = requested.AccountDeletionRequestedID
-			model.userRegisteredID = requested.Scopes.UserRegisteredID
-			model.authUserID = requested.AuthUserID
-			model.requested = true
+			model.request = v
+			requestPosition = e.Position
 		case AccountDeleted:
-			deleted, err := DecodeAccountDeletedEvent(resolved.Event)
+			v, err := DecodeAccountDeletedEvent(e.Event)
 			if err != nil {
 				return nil, err
 			}
-			model.deletedRequestID = deleted.Scopes.AccountDeletionRequestedID
-			model.deletedUserRegisteredID = deleted.Scopes.UserRegisteredID
-			model.deletedAuthUserID = deleted.AuthUserID
-			model.deleted = true
+			if v.AccountDeletedID != id {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			effect = v
+			effectPosition = e.Position
+		case AccountDeletionCompleted:
+			v, err := DecodeAccountDeletionCompletedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			receipt = &v
+			receiptPosition = e.Position
 		default:
 			return nil, eventstore.ErrInvalidEvent
 		}
 	}
-	if model.deleted && (model.deletedRequestID != model.requestedID || model.deletedUserRegisteredID != model.userRegisteredID || model.deletedAuthUserID != model.authUserID) {
-		return nil, errors.New("account deleted scope does not match completion context")
+	if effect.AccountDeletedID == "" {
+		return nil, eventstore.ErrNotFound
+	}
+	r := model.request
+	if r.AccountDeletionRequestedID == "" {
+		if receipt != nil {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		model.completed = true
+		return model, nil
+	}
+	if !effectPosition.After(requestPosition) || effect.Scopes.UserRegisteredID != r.Scopes.UserRegisteredID || effect.AuthUserID != r.AuthUserID {
+		return nil, eventstore.ErrConflict
+	}
+	if receipt != nil {
+		if !receiptPosition.After(effectPosition) || receipt.Scopes.AccountDeletedID != id || receipt.Scopes.AccountDeletionRequestedID != r.AccountDeletionRequestedID || receipt.Scopes.UserRegisteredID != r.Scopes.UserRegisteredID || receipt.AuthUserID != r.AuthUserID {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		model.completed = true
 	}
 	return model, nil
 }
-
-func completeAccountDeletionAccountDeletedByRequestQuery(requestID string) eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: AccountDeleted},
-		{Key: "scopes.accountDeletionRequestedId", Value: requestID},
-	}}}}
-}
-
-func completeAccountDeletionAccountDeletionRequestedQuery(requestID string) eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: AccountDeletionRequested},
-		{Key: AccountDeletionRequestedIDField, Value: requestID},
-	}}}}
-}
-
-func completeAccountDeletionCombineQueries(queries ...eventstore.Query) eventstore.Query {
-	combined := eventstore.Query{}
-	for _, query := range queries {
-		combined.Criteria = append(combined.Criteria, query.Criteria...)
-	}
-	return combined
+func completeAccountDeletionQuery(id string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeletionRequested}, {Key: "operationId", Value: id}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: "eventId", Value: id}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeletionCompleted}, {Key: "scopes.accountDeletedId", Value: id}}},
+	}}
 }

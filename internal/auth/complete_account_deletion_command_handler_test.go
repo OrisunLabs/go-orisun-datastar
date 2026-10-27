@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,96 +20,81 @@ func (e *deletionIdentityEffects) DestroySubjectKey(_ context.Context, id string
 	e.destroyed = append(e.destroyed, id)
 	return nil
 }
-func deletionCompletionFacts(t *testing.T, store eventstore.Retriever) []eventstore.ResolvedEvent {
-	t.Helper()
-	facts, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return facts
-}
-func TestDeletionCompletionBindsRequestIdentityBeforeEffects(t *testing.T) {
-	for _, scenario := range []string{"matching identity", "foreign command auth user", "foreign command registered user", "missing request", "foreign completion auth user", "foreign completion registered user", "already completed", "already completed with foreign command", "later request exists", "malformed request"} {
+
+func TestDeletionCompletionProvesExactEffectiveFact(t *testing.T) {
+	for _, scenario := range []string{"matching", "direct deletion", "missing effect", "earlier effect", "foreign effect owner", "foreign effect auth user", "already completed", "foreign receipt request", "foreign receipt user", "foreign receipt auth user", "receipt without request", "later unrelated request"} {
 		t.Run(scenario, func(t *testing.T) {
-			owner, foreign, request := uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString()
-			requested := mustAuthEvent(NewAccountDeletionRequestedEvent(request, time.Now(), owner, owner, nil))
-			facts := []eventstore.DomainEvent{requested}
-			command := CompleteAccountDeletionCommand{AccountDeletionRequestedID: request, UserRegisteredID: owner, AuthUserID: owner}
-			reject, alreadyCompleted := false, false
+			owner, foreign, request, operation := uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString()
+			proposal := mustAuthEvent(NewAccountDeletionRequestedEvent(request, time.Now(), owner, owner, operation, nil))
+			authID, userID := owner, owner
+			if scenario == "foreign effect owner" {
+				userID = foreign
+			}
+			if scenario == "foreign effect auth user" {
+				authID = foreign
+			}
+			effect := mustAuthEvent(NewAccountDeletedEvent(operation, time.Now(), authID, userID, nil))
+			facts := []eventstore.DomainEvent{proposal, effect}
+			reject := false
+			already := false
 			switch scenario {
-			case "foreign command auth user":
-				command.AuthUserID = foreign
+			case "direct deletion":
+				facts = []eventstore.DomainEvent{effect}
+			case "missing effect":
+				facts = []eventstore.DomainEvent{proposal}
 				reject = true
-			case "foreign command registered user":
-				command.UserRegisteredID = foreign
+			case "earlier effect":
+				facts = []eventstore.DomainEvent{effect, proposal}
 				reject = true
-			case "missing request":
-				facts = nil
+			case "foreign effect owner", "foreign effect auth user":
 				reject = true
-			case "foreign completion auth user", "foreign completion registered user", "already completed", "already completed with foreign command":
-				authID, userID := owner, owner
-				if scenario == "foreign completion auth user" {
-					authID = foreign
+			case "already completed", "foreign receipt request", "foreign receipt user", "foreign receipt auth user", "receipt without request":
+				receiptRequest, receiptUser, receiptAuth := request, owner, owner
+				if scenario == "foreign receipt request" {
+					receiptRequest = foreign
 					reject = true
 				}
-				if scenario == "foreign completion registered user" {
-					userID = foreign
+				if scenario == "foreign receipt user" {
+					receiptUser = foreign
 					reject = true
 				}
-				if scenario == "already completed with foreign command" {
-					command.AuthUserID = foreign
+				if scenario == "foreign receipt auth user" {
+					receiptAuth = foreign
 					reject = true
 				}
-				facts = append(facts, mustAuthEvent(NewAccountDeletedEvent(uuidv7.NewString(), time.Now(), request, authID, userID, nil)))
-				alreadyCompleted = true
-			case "later request exists":
-				facts = append(facts, mustAuthEvent(NewAccountDeletionRequestedEvent(uuidv7.NewString(), time.Now(), foreign, owner, nil)))
-			case "malformed request":
-				facts[0].Data = eventstore.MustData(facts[0].Data)
-				facts[0].Data["extra"] = true
-				reject = true
+				receipt := mustAuthEvent(NewAccountDeletionCompletedEvent(uuidv7.NewString(), time.Now(), receiptRequest, operation, receiptAuth, receiptUser, nil))
+				facts = append(facts, receipt)
+				already = true
+				if scenario == "receipt without request" {
+					facts = []eventstore.DomainEvent{effect, receipt}
+					reject = true
+				}
+			case "later unrelated request":
+				facts = append(facts, mustAuthEvent(NewAccountDeletionRequestedEvent(uuidv7.NewString(), time.Now(), foreign, owner, uuidv7.NewString(), nil)))
 			}
 			store := eventstoretest.New(t, facts...)
-			before := len(deletionCompletionFacts(t, store))
-			effects := &deletionIdentityEffects{}
-			err := CompleteAccountDeletionCommandHandler(t.Context(), command, effects, effects, store, store)
+			before := len(resetOutcomeFacts(t, store, AccountDeletionCompleted))
+			command := CompleteAccountDeletionCommand{AccountDeletedID: operation}
+			err := CompleteAccountDeletionCommandHandler(t.Context(), command, store, store)
 			if reject && err == nil {
-				t.Fatal("mismatched deletion authority accepted")
+				t.Fatal("invalid effect or ancestry completed workflow")
 			}
 			if !reject && err != nil {
 				t.Fatal(err)
 			}
-			if strings.HasPrefix(scenario, "foreign completion") && err != nil && !strings.Contains(err.Error(), "scope does not match") {
-				t.Fatalf("completion ancestry was not validated: %v", err)
+			expected := before
+			if !reject && !already && scenario != "direct deletion" {
+				expected++
 			}
-			expectedEffects := 1
-			if reject || alreadyCompleted {
-				expectedEffects = 0
+			if len(resetOutcomeFacts(t, store, AccountDeletionCompleted)) != expected {
+				t.Fatal("unexpected completion count")
 			}
-			if len(effects.deleted) != expectedEffects || len(effects.destroyed) != expectedEffects {
-				t.Fatalf("unexpected destructive effects: %+v", effects)
-			}
-			completed := deletionCompletionFacts(t, store)
-			if len(completed) != before+expectedEffects {
-				t.Fatal("rejected or repeated command saved a completion")
-			}
-			if expectedEffects == 1 {
-				if effects.deleted[0] != owner || effects.destroyed[0] != owner {
-					t.Fatal("side effects targeted a different owner")
-				}
-				value, err := DecodeAccountDeletedEvent(completed[len(completed)-1].Event)
-				if err != nil {
+			if !reject {
+				if err := CompleteAccountDeletionCommandHandler(t.Context(), command, store, store); err != nil {
 					t.Fatal(err)
 				}
-				if value.AuthUserID != owner || value.Scopes.UserRegisteredID != owner || value.Scopes.AccountDeletionRequestedID != request {
-					t.Fatal("completion differs from request identity")
-				}
-				// Exact delivery retries must not repeat destruction or append another fact.
-				if err := CompleteAccountDeletionCommandHandler(t.Context(), command, effects, effects, store, store); err != nil {
-					t.Fatal(err)
-				}
-				if len(effects.deleted) != 1 || len(effects.destroyed) != 1 || len(deletionCompletionFacts(t, store)) != before+1 {
-					t.Fatal("retry repeated destructive effects")
+				if len(resetOutcomeFacts(t, store, AccountDeletionCompleted)) != expected {
+					t.Fatal("retry duplicated completion")
 				}
 			}
 		})

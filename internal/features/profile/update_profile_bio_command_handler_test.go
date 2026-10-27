@@ -111,7 +111,6 @@ func (r *profileConcurrentBioReader) GetLatestByCriteria(ctx context.Context, cr
 
 func profileFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, *profileTestKeys) {
 	t.Helper()
-	store := eventstoretest.New(t)
 	key, err := protectedpii.GenerateSubjectDataKey()
 	if err != nil {
 		t.Fatal(err)
@@ -121,11 +120,13 @@ func profileFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, *profileT
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, err := auth.RegisterUserCommandHandler(t.Context(), auth.RegisterUserCommand{Username: "profile-user", Email: "profile@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: string(hash), EmailVerifiedAt: time.Unix(1, 0).UTC()}, store, store, keys)
+	id := uuidv7.NewString()
+	keys.id = id
+	root, err := auth.NewUserRegisteredEvent(id, "profile-user", "profile@example.com", "", "", 0, string(hash), time.Unix(1, 0).UTC(), time.Unix(1, 0).UTC(), key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, user.UserRegisteredID, keys
+	return eventstoretest.New(t, root), id, keys
 }
 func profileFacts(t *testing.T, store *eventstore.EmbeddedOrisun) []eventstore.ResolvedEvent {
 	t.Helper()

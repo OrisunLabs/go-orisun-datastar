@@ -9,6 +9,11 @@ import (
 
 func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 	return []eventstore.BoundaryIndexDefinition{
+		{Name: "account_deletion_operation", Fields: []string{"operationId"}, EventTypes: []string{auth.AccountDeletionRequested}},
+		{Name: "account_deletion_effect_completion", Fields: []string{"scopes.accountDeletedId"}, EventTypes: []string{auth.AccountDeletionCompleted}},
+		{Name: "password_reset_authorized_id", Fields: []string{auth.PasswordResetAuthorizedIDField}, EventTypes: []string{auth.PasswordResetAuthorized}},
+		{Name: "password_reset_operation", Fields: []string{"operationId"}, EventTypes: []string{auth.PasswordResetAuthorized}},
+		{Name: "password_reset_completion", Fields: []string{auth.ScopePasswordResetAuthorizedIDField, "scopes.passwordChangedId"}, EventTypes: []string{auth.PasswordResetCompleted}},
 		{Name: "registration_started_id", Fields: []string{auth.UserRegistrationStartedIDField}, EventTypes: []string{auth.UserRegistrationStarted}},
 		{Name: "registration_user", Fields: []string{"userId"}, EventTypes: []string{auth.UserRegistrationStarted}},
 		{Name: "registration_ancestry", Fields: []string{auth.ScopeUserRegistrationStartedIDField}, EventTypes: []string{auth.EmailVerificationOTPGenerated, auth.EmailVerificationOTPValidated, auth.UserRegistrationCompleted, auth.UserRegistrationFailed}},
@@ -45,7 +50,7 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 		{
 			Name:       "reset_ancestry",
 			Fields:     []string{auth.ScopePasswordResetRequestedIDField},
-			EventTypes: []string{auth.PasswordResetEmailSent, auth.PasswordResetCompleted},
+			EventTypes: []string{auth.PasswordResetEmailSent, auth.PasswordResetAuthorized, auth.PasswordResetCompleted},
 		},
 		{
 			Name:   "auth_user_ancestry",
@@ -53,7 +58,6 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 			EventTypes: []string{
 				auth.UserNameChanged,
 				auth.PasswordResetRequested,
-				auth.PasswordResetCompleted,
 				auth.PasswordChanged,
 				auth.AccountDeletionRequested,
 				auth.AccountDeleted,
@@ -82,7 +86,7 @@ func BoundaryIndexes() []eventstore.BoundaryIndexDefinition {
 		{
 			Name:       "deletion_ancestry",
 			Fields:     []string{"scopes.accountDeletionRequestedId"},
-			EventTypes: []string{auth.AccountDeleted},
+			EventTypes: []string{auth.AccountDeletionCompleted},
 		},
 		{
 			Name:       "login_attempt_recorded_id",

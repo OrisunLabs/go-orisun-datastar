@@ -101,11 +101,12 @@ func (s Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "auth.reset_password", nil)
 	_ = r.ParseForm()
 	token := chi.URLParam(r, "token")
-	if err := auth.ResetPasswordCommandHandler(r.Context(), auth.ResetPasswordCommand{
+	_, err := auth.AuthorizePasswordResetCommandHandler(r.Context(), auth.ResetPasswordCommand{
 		Token:    token,
 		Password: r.FormValue("password"),
 		Metadata: eventstore.HTTPCommandMetadata(r, ""),
-	}, s.Verifications, s.AuthUsers, s.EventSaver, s.EventRetriever); err != nil {
+	}, s.Verifications, s.AuthUsers, s.EventSaver, s.EventRetriever)
+	if err != nil {
 		patchTempl(w, r, views.ResetPasswordForm(token, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}
@@ -118,9 +119,6 @@ func (s Server) validateEmail(w http.ResponseWriter, r *http.Request) {
 	registrationID := chi.URLParam(r, "registrationID")
 	metadata := eventstore.HTTPCommandMetadata(r, "")
 	err := auth.ValidateEmailVerificationOTPCommandHandler(r.Context(), auth.ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: registrationID, Code: r.FormValue("otp"), Metadata: metadata}, s.EventSaver, s.EventRetriever)
-	if err == nil {
-		err = auth.FinalizeUserRegistration(r.Context(), registrationID, metadata, s.EventSaver, s.EventRetriever, s.PIIKeys)
-	}
 	if err != nil {
 		patchTempl(w, r, views.ValidateEmailForm(registrationID, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return

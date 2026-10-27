@@ -58,7 +58,6 @@ const (
 	PasswordResetEmailSentAtField             = "sentAt"
 	PasswordResetCompletedIDField             = "passwordResetCompletedId"
 	PasswordResetCompletedResetAtField        = "resetAt"
-	PasswordResetCompletedPasswordHashField   = "passwordHash"
 	PasswordChangedIDField                    = "passwordChangedId"
 	PasswordChangedAtField                    = "changedAt"
 	PasswordChangedPasswordHashField          = "passwordHash"
@@ -70,6 +69,7 @@ const (
 	ScopePasswordResetRequestedIDField        = "scopes." + ScopePasswordResetRequestedIDKey
 	AccountDeletionRequested                  = "AccountDeletionRequested"
 	AccountDeleted                            = "AccountDeleted"
+	AccountDeletionCompleted                  = "AccountDeletionCompleted"
 	AccountDeletionRequestedIDField           = "accountDeletionRequestedId"
 	AccountDeletionAuthUserIDField            = "authUserId"
 	AccountDeletedIDField                     = "accountDeletedId"
@@ -145,7 +145,6 @@ type PasswordResetEmailSentEvent struct {
 type PasswordResetCompletedEvent struct {
 	PasswordResetCompletedID string                      `json:"passwordResetCompletedId"`
 	ResetAt                  string                      `json:"resetAt"`
-	PasswordHash             string                      `json:"passwordHash"`
 	Scopes                   PasswordResetCompletedScope `json:"scopes"`
 }
 
@@ -158,16 +157,24 @@ type PasswordChangedEvent struct {
 
 type AccountDeletionRequestedEvent struct {
 	AccountDeletionRequestedID string              `json:"accountDeletionRequestedId"`
+	OperationID                string              `json:"operationId"`
 	RequestedAt                string              `json:"requestedAt"`
 	AuthUserID                 string              `json:"authUserId"`
 	Scopes                     UserRegisteredScope `json:"scopes"`
 }
 
 type AccountDeletedEvent struct {
-	AccountDeletedID string               `json:"accountDeletedId"`
-	DeletedAt        string               `json:"deletedAt"`
-	AuthUserID       string               `json:"authUserId"`
-	Scopes           AccountDeletionScope `json:"scopes"`
+	AccountDeletedID string              `json:"accountDeletedId"`
+	DeletedAt        string              `json:"deletedAt"`
+	AuthUserID       string              `json:"authUserId"`
+	Scopes           UserRegisteredScope `json:"scopes"`
+}
+
+type AccountDeletionCompletedEvent struct {
+	AccountDeletionCompletedID string                         `json:"accountDeletionCompletedId"`
+	CompletedAt                string                         `json:"completedAt"`
+	AuthUserID                 string                         `json:"authUserId"`
+	Scopes                     AccountDeletionCompletionScope `json:"scopes"`
 }
 
 type LoginAttemptRecordedEvent struct {
@@ -212,12 +219,15 @@ type PasswordResetRequestedScope struct {
 }
 
 type PasswordResetCompletedScope struct {
-	PasswordResetRequestedID string `json:"passwordResetRequestedId"`
-	UserRegisteredID         string `json:"userRegisteredId"`
+	PasswordResetAuthorizedID string `json:"passwordResetAuthorizedId"`
+	PasswordChangedID         string `json:"passwordChangedId"`
+	PasswordResetRequestedID  string `json:"passwordResetRequestedId"`
+	UserRegisteredID          string `json:"userRegisteredId"`
 }
 
-type AccountDeletionScope struct {
+type AccountDeletionCompletionScope struct {
 	AccountDeletionRequestedID string `json:"accountDeletionRequestedId"`
+	AccountDeletedID           string `json:"accountDeletedId"`
 	UserRegisteredID           string `json:"userRegisteredId"`
 }
 
@@ -392,17 +402,18 @@ func NewPasswordResetEmailSentEvent(passwordResetEmailSentID string, sentAt time
 	return event, nil
 }
 
-func NewPasswordResetCompletedEvent(passwordResetCompletedID string, resetAt time.Time, passwordResetRequestedID, userRegisteredID, passwordHash string, metadata map[string]any) (eventstore.DomainEvent, error) {
+func NewPasswordResetCompletedEvent(passwordResetCompletedID string, resetAt time.Time, passwordResetRequestedID, userRegisteredID, authorizationID, passwordChangedID string, metadata map[string]any) (eventstore.DomainEvent, error) {
 	event := eventstore.DomainEvent{
 		EventID:   passwordResetCompletedID,
 		EventType: PasswordResetCompleted,
 		Data: eventstore.MustData(PasswordResetCompletedEvent{
 			PasswordResetCompletedID: passwordResetCompletedID,
 			ResetAt:                  formatEventTime(resetAt),
-			PasswordHash:             passwordHash,
 			Scopes: PasswordResetCompletedScope{
-				PasswordResetRequestedID: passwordResetRequestedID,
-				UserRegisteredID:         userRegisteredID,
+				PasswordResetAuthorizedID: authorizationID,
+				PasswordChangedID:         passwordChangedID,
+				PasswordResetRequestedID:  passwordResetRequestedID,
+				UserRegisteredID:          userRegisteredID,
 			},
 		}),
 		Metadata: metadata,
@@ -433,12 +444,13 @@ func NewPasswordChangedEvent(passwordChangedID string, changedAt time.Time, user
 	return event, nil
 }
 
-func NewAccountDeletionRequestedEvent(accountDeletionRequestedID string, requestedAt time.Time, authUserID, userRegisteredID string, metadata map[string]any) (eventstore.DomainEvent, error) {
+func NewAccountDeletionRequestedEvent(accountDeletionRequestedID string, requestedAt time.Time, authUserID, userRegisteredID, operationID string, metadata map[string]any) (eventstore.DomainEvent, error) {
 	event := eventstore.DomainEvent{
 		EventID:   accountDeletionRequestedID,
 		EventType: AccountDeletionRequested,
 		Data: eventstore.MustData(AccountDeletionRequestedEvent{
 			AccountDeletionRequestedID: accountDeletionRequestedID,
+			OperationID:                operationID,
 			RequestedAt:                formatEventTime(requestedAt),
 			AuthUserID:                 authUserID,
 			Scopes:                     UserRegisteredScope{UserRegisteredID: userRegisteredID},
@@ -452,7 +464,7 @@ func NewAccountDeletionRequestedEvent(accountDeletionRequestedID string, request
 	return event, nil
 }
 
-func NewAccountDeletedEvent(accountDeletedID string, deletedAt time.Time, accountDeletionRequestedID, authUserID, userRegisteredID string, metadata map[string]any) (eventstore.DomainEvent, error) {
+func NewAccountDeletedEvent(accountDeletedID string, deletedAt time.Time, authUserID, userRegisteredID string, metadata map[string]any) (eventstore.DomainEvent, error) {
 	event := eventstore.DomainEvent{
 		EventID:   accountDeletedID,
 		EventType: AccountDeleted,
@@ -460,10 +472,7 @@ func NewAccountDeletedEvent(accountDeletedID string, deletedAt time.Time, accoun
 			AccountDeletedID: accountDeletedID,
 			DeletedAt:        formatEventTime(deletedAt),
 			AuthUserID:       authUserID,
-			Scopes: AccountDeletionScope{
-				AccountDeletionRequestedID: accountDeletionRequestedID,
-				UserRegisteredID:           userRegisteredID,
-			},
+			Scopes:           UserRegisteredScope{UserRegisteredID: userRegisteredID},
 		}),
 		Metadata: metadata,
 	}
@@ -544,6 +553,9 @@ func ValidateEvent(event eventstore.DomainEvent) error {
 	case PasswordResetEmailSent:
 		_, err := DecodePasswordResetEmailSentEvent(event)
 		return err
+	case PasswordResetAuthorized:
+		_, err := DecodePasswordResetAuthorizedEvent(event)
+		return err
 	case PasswordResetCompleted:
 		_, err := DecodePasswordResetCompletedEvent(event)
 		return err
@@ -552,6 +564,9 @@ func ValidateEvent(event eventstore.DomainEvent) error {
 		return err
 	case AccountDeletionRequested:
 		_, err := DecodeAccountDeletionRequestedEvent(event)
+		return err
+	case AccountDeletionCompleted:
+		_, err := DecodeAccountDeletionCompletedEvent(event)
 		return err
 	case AccountDeleted:
 		_, err := DecodeAccountDeletedEvent(event)
@@ -658,7 +673,13 @@ func DecodeAccountDeletionRequestedEvent(event eventstore.DomainEvent) (AccountD
 	if err := decodeAuthPayload(event, AccountDeletionRequested, &value); err != nil {
 		return value, err
 	}
-	return value, validateAuthValue(reflect.ValueOf(value), "")
+	if err := validateAuthValue(reflect.ValueOf(value), ""); err != nil {
+		return value, err
+	}
+	if value.OperationID == value.AccountDeletionRequestedID || value.OperationID == value.Scopes.UserRegisteredID || value.OperationID == value.AuthUserID {
+		return value, eventstore.ErrInvalidEvent
+	}
+	return value, nil
 }
 
 func DecodeAccountDeletedEvent(event eventstore.DomainEvent) (AccountDeletedEvent, error) {
@@ -787,4 +808,53 @@ func validateAuthValue(value reflect.Value, field string) error {
 		}
 	}
 	return nil
+}
+
+const PasswordResetAuthorized = "PasswordResetAuthorized"
+const PasswordResetAuthorizedIDField = "passwordResetAuthorizedId"
+const ScopePasswordResetAuthorizedIDField = "scopes.passwordResetAuthorizedId"
+
+// OperationID names a future domain command; it is not prior-event ancestry.
+type PasswordResetAuthorizedEvent struct {
+	PasswordResetAuthorizedID string                          `json:"passwordResetAuthorizedId"`
+	OperationID               string                          `json:"operationId"`
+	PasswordHash              string                          `json:"passwordHash"`
+	AuthorizedAt              string                          `json:"authorizedAt"`
+	Scopes                    PasswordResetAuthorizationScope `json:"scopes"`
+}
+type PasswordResetAuthorizationScope struct {
+	PasswordResetRequestedID string `json:"passwordResetRequestedId"`
+	UserRegisteredID         string `json:"userRegisteredId"`
+}
+
+func NewPasswordResetAuthorizedEvent(id, operationID, requestID, userID, hash string, at time.Time, metadata map[string]any) (eventstore.DomainEvent, error) {
+	e := eventstore.DomainEvent{EventID: id, EventType: PasswordResetAuthorized, Data: eventstore.MustData(PasswordResetAuthorizedEvent{id, operationID, hash, formatEventTime(at), PasswordResetAuthorizationScope{requestID, userID}}), Metadata: metadata}
+	_, err := DecodePasswordResetAuthorizedEvent(e)
+	return e, err
+}
+func DecodePasswordResetAuthorizedEvent(e eventstore.DomainEvent) (PasswordResetAuthorizedEvent, error) {
+	var v PasswordResetAuthorizedEvent
+	if err := decodeAuthPayload(e, PasswordResetAuthorized, &v); err != nil {
+		return v, err
+	}
+	if err := validateAuthValue(reflect.ValueOf(v), ""); err != nil {
+		return v, err
+	}
+	if v.OperationID == v.PasswordResetAuthorizedID || v.OperationID == v.Scopes.PasswordResetRequestedID || v.OperationID == v.Scopes.UserRegisteredID {
+		return v, eventstore.ErrInvalidEvent
+	}
+	return v, nil
+}
+
+func NewAccountDeletionCompletedEvent(id string, at time.Time, requestID, deletedID, authUserID, userID string, metadata map[string]any) (eventstore.DomainEvent, error) {
+	e := eventstore.DomainEvent{EventID: id, EventType: AccountDeletionCompleted, Data: eventstore.MustData(AccountDeletionCompletedEvent{AccountDeletionCompletedID: id, CompletedAt: formatEventTime(at), AuthUserID: authUserID, Scopes: AccountDeletionCompletionScope{AccountDeletionRequestedID: requestID, AccountDeletedID: deletedID, UserRegisteredID: userID}}), Metadata: metadata}
+	_, err := DecodeAccountDeletionCompletedEvent(e)
+	return e, err
+}
+func DecodeAccountDeletionCompletedEvent(e eventstore.DomainEvent) (AccountDeletionCompletedEvent, error) {
+	var v AccountDeletionCompletedEvent
+	if err := decodeAuthPayload(e, AccountDeletionCompleted, &v); err != nil {
+		return v, err
+	}
+	return v, validateAuthValue(reflect.ValueOf(v), "")
 }

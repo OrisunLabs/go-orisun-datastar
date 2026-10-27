@@ -31,7 +31,7 @@ func TestPasswordMutationsUseAuthoritativeCredential(t *testing.T) {
 					user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
 					root := registeredAuthEvent(t, owner)
 					changed := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, authorityPasswordHash(t, "changed-secret"), nil))
-					reset := mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), time.Now(), uuidv7.NewString(), owner, authorityPasswordHash(t, "reset-secret"), nil))
+					reset := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, authorityPasswordHash(t, "reset-secret"), nil))
 					facts := []eventstore.DomainEvent{root}
 					password := "secret123"
 					reject := false
@@ -101,51 +101,55 @@ func TestPasswordMutationsUseAuthoritativeCredential(t *testing.T) {
 }
 func TestPasswordMutationsConflictWithConcurrentCredentialChange(t *testing.T) {
 	for _, intent := range []string{"change", "delete"} {
-		for _, source := range []string{PasswordChanged, PasswordResetCompleted} {
-			t.Run(intent+"/"+source, func(t *testing.T) {
-				owner := uuidv7.NewString()
-				user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
-				store := eventstoretest.New(t, registeredAuthEvent(t, owner))
-				hash := authorityPasswordHash(t, "racing-secret")
-				var racing eventstore.DomainEvent
-				if source == PasswordChanged {
-					racing = mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, hash, nil))
-				} else {
-					racing = mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), time.Now(), uuidv7.NewString(), owner, hash, nil))
-				}
-				read := false
-				retriever := resetLatestFunc(func(ctx context.Context, criteria []eventstore.Criterion) (eventstore.LatestByCriteriaResult, error) {
-					latest, err := store.GetLatestByCriteria(ctx, criteria)
-					if err != nil {
-						return latest, err
-					}
-					if read {
-						t.Fatal("authority was reloaded instead of guarding the accepted observation")
-					}
-					read = true
-					_, err = store.SaveEventsV2(ctx, []eventstore.DomainEvent{racing}, nil)
+		t.Run(intent, func(t *testing.T) {
+			owner := uuidv7.NewString()
+			user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
+			store := eventstoretest.New(t, registeredAuthEvent(t, owner))
+			hash := authorityPasswordHash(t, "racing-secret")
+			racing := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, hash, nil))
+			read := false
+			retriever := resetLatestFunc(func(ctx context.Context, criteria []eventstore.Criterion) (eventstore.LatestByCriteriaResult, error) {
+				latest, err := store.GetLatestByCriteria(ctx, criteria)
+				if err != nil {
 					return latest, err
-				})
-				credentials := ownershipCredentials{user: user, hash: testAuthHash(t)}
-				var err error
-				eventType := PasswordChanged
-				if intent == "change" {
-					err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{User: user, CurrentPassword: "secret123", NewPassword: "updated123"}, credentials, store, retriever)
-				} else {
-					eventType = AccountDeletionRequested
-					_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, credentials, store, retriever)
 				}
-				if !errors.Is(err, eventstore.ErrConflict) {
-					t.Fatalf("concurrent credential change did not invalidate append: %v", err)
+				authorityRead := false
+				for _, c := range criteria {
+					for _, tag := range c.Tags {
+						if tag.Key == eventstore.EventTypeField && tag.Value == UserRegistered {
+							authorityRead = true
+						}
+					}
 				}
-				expected := 0
-				if eventType == source {
-					expected = 1
+				if !authorityRead {
+					return latest, nil
 				}
-				if len(resetOutcomeFacts(t, store, eventType)) != expected {
-					t.Fatal("conflicting mutation was persisted")
+				if read {
+					t.Fatal("authority was reloaded instead of guarding the accepted observation")
 				}
+				read = true
+				_, err = store.SaveEventsV2(ctx, []eventstore.DomainEvent{racing}, nil)
+				return latest, err
 			})
-		}
+			credentials := ownershipCredentials{user: user, hash: testAuthHash(t)}
+			var err error
+			eventType := PasswordChanged
+			if intent == "change" {
+				err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{User: user, CurrentPassword: "secret123", NewPassword: "updated123"}, credentials, store, retriever)
+			} else {
+				eventType = AccountDeletionRequested
+				_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, credentials, store, retriever)
+			}
+			if !errors.Is(err, eventstore.ErrConflict) {
+				t.Fatalf("concurrent credential change did not invalidate append: %v", err)
+			}
+			expected := 0
+			if eventType == PasswordChanged {
+				expected = 1
+			}
+			if len(resetOutcomeFacts(t, store, eventType)) != expected {
+				t.Fatal("conflicting mutation was persisted")
+			}
+		})
 	}
 }

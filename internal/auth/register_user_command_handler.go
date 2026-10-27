@@ -9,26 +9,21 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var ErrRegistrationIdentityUnavailable = errors.New("username or email is already registered")
 
 type RegisterUserCommand struct {
-	UserRegisteredID                     string
-	Username, Email, FirstName, LastName string
-	YearOfBirth                          int
-	PasswordHash                         string
-	EmailVerifiedAt                      time.Time
-	Metadata                             CommandMetadata
+	UserRegisteredID string
+	RegistrationDetails
+	EmailVerifiedAt time.Time
+	Metadata        CommandMetadata
 }
-type RegisterUserResult struct {
-	UserRegisteredID, Username, Email, FirstName, LastName, PasswordHash string
-}
+type RegisterUserResult struct{ UserRegisteredID string }
 
 // RegisterUserCommandHandler accepts complete ordinary domain input. It knows
 // nothing about signup, OTPs, proposals or their history.
-func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyPort) (RegisterUserResult, error) {
+func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever, keys SubjectPiiKeyReader) (RegisterUserResult, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return RegisterUserResult{}, err
 	}
@@ -36,18 +31,18 @@ func RegisterUserCommandHandler(ctx context.Context, command RegisterUserCommand
 	if err != nil {
 		return RegisterUserResult{}, err
 	}
-	result := RegisterUserResult{command.UserRegisteredID, command.Username, command.Email, command.FirstName, command.LastName, command.PasswordHash}
+	result := RegisterUserResult{command.UserRegisteredID}
 	if model.existing {
 		return result, nil
 	}
-	key, err := keys.GetOrCreateSubjectDataKey(ctx, command.UserRegisteredID)
+	if err := validateRegistrationPlaintext(ctx, command, keys); err != nil {
+		return RegisterUserResult{}, err
+	}
+	event, err := newAcceptedRegistrationEvent(command)
 	if err != nil {
 		return RegisterUserResult{}, err
 	}
-	event, err := NewUserRegisteredEvent(command.UserRegisteredID, command.Username, command.Email, command.FirstName, command.LastName, command.YearOfBirth, command.PasswordHash, time.Now(), command.EmailVerifiedAt, key, nil)
-	if err != nil {
-		return RegisterUserResult{}, err
-	}
+
 	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return RegisterUserResult{}, err
 	}
@@ -61,14 +56,10 @@ type registerUserContext struct {
 }
 
 func loadRegisterUserContext(ctx context.Context, command RegisterUserCommand, retriever eventstore.LatestRetriever) (*registerUserContext, error) {
-	if !validAuthID(command.UserRegisteredID) || len(command.Username) < 4 || command.Username != strings.TrimSpace(command.Username) || command.Email == "" || command.Email != strings.ToLower(strings.TrimSpace(command.Email)) || command.FirstName != strings.TrimSpace(command.FirstName) || command.LastName != strings.TrimSpace(command.LastName) || command.EmailVerifiedAt.IsZero() || command.EmailVerifiedAt.After(time.Now()) {
-		return nil, eventstore.ErrInvalidEvent
+	if _, err := newAcceptedRegistrationEvent(command); err != nil {
+		return nil, err
 	}
-	if _, err := bcrypt.Cost([]byte(command.PasswordHash)); err != nil {
-		return nil, eventstore.ErrInvalidEvent
-	}
-	protector := protectedpii.FromEnv()
-	query := registerUserEffectiveIdentityQuery(command.UserRegisteredID, protector.BlindIndex(UserRegisteredUsernameField, command.Username), protector.BlindIndex(UserRegisteredEmailField, command.Email))
+	query := registerUserEffectiveIdentityQuery(command.UserRegisteredID, command.UsernameHash, command.EmailHash)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
@@ -80,7 +71,7 @@ func loadRegisterUserContext(ctx context.Context, command RegisterUserCommand, r
 			return nil, err
 		}
 		if value.UserRegisteredID == command.UserRegisteredID {
-			if value.UsernameHash != protector.BlindIndex(UserRegisteredUsernameField, command.Username) || value.EmailHash != protector.BlindIndex(UserRegisteredEmailField, command.Email) || value.FirstName.BlindIndex != protector.BlindIndex(UserRegisteredFirstNameField, command.FirstName) || value.LastName.BlindIndex != protector.BlindIndex(UserRegisteredLastNameField, command.LastName) || value.YearOfBirth != command.YearOfBirth || value.PasswordHash != command.PasswordHash || value.EmailVerifiedAt != formatEventTime(command.EmailVerifiedAt) {
+			if value.UsernameHash != command.UsernameHash || value.EmailHash != command.EmailHash || value.FirstName.BlindIndex != command.FirstName.BlindIndex || value.LastName.BlindIndex != command.LastName.BlindIndex || value.YearOfBirth != command.YearOfBirth || value.PasswordHash != command.PasswordHash || value.EmailVerifiedAt != formatEventTime(command.EmailVerifiedAt) {
 				return nil, eventstore.ErrConflict
 			}
 			model.existing = true
@@ -96,4 +87,40 @@ func registerUserEffectiveIdentityQuery(id, usernameHash, emailHash string) even
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredUsernameHashField, Value: usernameHash}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredEmailHashField, Value: emailHash}}},
 	}}
+}
+
+func newAcceptedRegistrationEvent(command RegisterUserCommand) (eventstore.DomainEvent, error) {
+	if command.EmailVerifiedAt.IsZero() || command.EmailVerifiedAt.After(time.Now()) {
+		return eventstore.DomainEvent{}, eventstore.ErrInvalidEvent
+	}
+	e := eventstore.DomainEvent{EventID: command.UserRegisteredID, EventType: UserRegistered, Data: eventstore.MustData(UserRegisteredEvent{UserRegisteredID: command.UserRegisteredID, RegisteredAt: formatEventTime(time.Now()), EmailVerifiedAt: formatEventTime(command.EmailVerifiedAt), RegistrationDetails: command.RegistrationDetails})}
+	_, err := DecodeUserRegisteredEvent(e)
+	return e, err
+}
+
+func validateRegistrationPlaintext(ctx context.Context, command RegisterUserCommand, keys SubjectPiiKeyReader) error {
+	key, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return eventstore.ErrNotFound
+	}
+	protector := protectedpii.FromEnv()
+	fields := []string{UserRegisteredUsernameField, UserRegisteredEmailField, UserRegisteredFirstNameField, UserRegisteredLastNameField}
+	values := []protectedpii.Value{command.Username, command.Email, command.FirstName, command.LastName}
+	plain := make([]string, len(values))
+	for i, v := range values {
+		plain[i], err = protector.DecryptWithDataKey(v, key)
+		if err != nil {
+			return err
+		}
+		if plain[i] != strings.TrimSpace(plain[i]) || protector.BlindIndex(fields[i], plain[i]) != v.BlindIndex {
+			return eventstore.ErrInvalidEvent
+		}
+	}
+	if len(plain[0]) < 4 || plain[1] == "" || plain[1] != strings.ToLower(plain[1]) {
+		return eventstore.ErrInvalidEvent
+	}
+	return nil
 }

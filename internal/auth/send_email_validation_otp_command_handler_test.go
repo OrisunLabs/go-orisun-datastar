@@ -6,7 +6,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/email"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -45,11 +44,11 @@ func emailCommandFixture(t *testing.T) (*eventstore.EmbeddedOrisun, views.User, 
 	t.Helper()
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	registered, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{Username: "email-user", Email: "email@example.com", UserRegisteredID: uuidv7.NewString(), PasswordHash: testAuthHash(t), EmailVerifiedAt: time.Unix(1, 0).UTC()}, store, store, keys)
+	registered, err := RegisterUserCommandHandler(t.Context(), directRegistrationCommand(t, uuidv7.NewString(), "email-user", "email@example.com", keys), store, store, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store, views.User{UserRegisteredID: registered.UserRegisteredID, Email: registered.Email}, keys
+	return store, views.User{UserRegisteredID: registered.UserRegisteredID, Email: "email@example.com"}, keys
 }
 
 type commandTestEmailSender struct {

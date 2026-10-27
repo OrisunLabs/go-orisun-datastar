@@ -9,8 +9,8 @@ import (
 )
 
 type CompleteUserRegistrationCommand struct {
-	UserRegistrationStartedID string
-	Metadata                  CommandMetadata
+	UserRegisteredID string
+	Metadata         CommandMetadata
 }
 
 func CompleteUserRegistrationCommandHandler(ctx context.Context, command CompleteUserRegistrationCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
@@ -41,7 +41,49 @@ type completeUserRegistrationContext struct {
 }
 
 func loadCompleteUserRegistrationContext(ctx context.Context, command CompleteUserRegistrationCommand, retriever eventstore.LatestRetriever) (*completeUserRegistrationContext, error) {
-	id := command.UserRegistrationStartedID
+	userID := command.UserRegisteredID
+	if !validAuthID(userID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	sourceQuery := completeUserRegistrationSourceQuery(userID)
+	sources, err := retriever.GetLatestByCriteria(ctx, sourceQuery.Criteria)
+	if err != nil {
+		return nil, err
+	}
+	var id string
+	var acceptedFact *eventstore.ResolvedEvent
+	for _, e := range eventstore.EventsFromLatest(sources.Results) {
+		switch e.Event.EventType {
+		case UserRegistrationStarted:
+			v, err := DecodeUserRegistrationStartedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.UserID != userID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			id = v.UserRegistrationStartedID
+		case UserRegistered:
+			v, err := DecodeUserRegisteredEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.UserRegisteredID != userID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			copy := e
+			acceptedFact = &copy
+		default:
+			return nil, eventstore.ErrInvalidEvent
+		}
+	}
+	if acceptedFact == nil {
+		return nil, eventstore.ErrNotFound
+	}
+
+	if id == "" {
+		return &completeUserRegistrationContext{completed: true}, nil
+	}
 	if !validAuthID(id) {
 		return nil, eventstore.ErrInvalidEvent
 	}
@@ -50,7 +92,7 @@ func loadCompleteUserRegistrationContext(ctx context.Context, command CompleteUs
 	if err != nil {
 		return nil, err
 	}
-	model := &completeUserRegistrationContext{consistency: []eventstore.ConsistencyObservation{{Query: query, Position: latest.ContextPosition}}}
+	model := &completeUserRegistrationContext{consistency: []eventstore.ConsistencyObservation{{Query: sourceQuery, Position: sources.ContextPosition}, {Query: query, Position: latest.ContextPosition}}}
 	var receipt *UserRegistrationCompletedEvent
 	var completedPosition eventstore.Position
 	failed := false
@@ -86,8 +128,15 @@ func loadCompleteUserRegistrationContext(ctx context.Context, command CompleteUs
 			return nil, eventstore.ErrInvalidEvent
 		}
 	}
-	if model.started.UserRegistrationStartedID != id || model.validated.Scopes.UserRegistrationStartedID != id {
-		return nil, eventstore.ErrNotFound
+	if model.started.UserRegistrationStartedID != id || model.started.UserID != userID {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	if model.validated.EmailVerificationOTPValidatedID == "" {
+		model.completed = true
+		return model, nil
+	}
+	if model.validated.Scopes.UserRegistrationStartedID != id {
+		return nil, eventstore.ErrInvalidEvent
 	}
 	if !model.validatedPosition.After(model.startedPosition) {
 		return nil, eventstore.ErrInvalidEvent
@@ -105,23 +154,14 @@ func loadCompleteUserRegistrationContext(ctx context.Context, command CompleteUs
 		model.completed = true
 		return model, nil
 	}
-	effective := completeUserRegistrationEffectiveQuery(model.started.UserID)
-	loaded, err := retriever.GetLatestByCriteria(ctx, effective.Criteria)
+	accepted, err := DecodeUserRegisteredEvent(acceptedFact.Event)
 	if err != nil {
 		return nil, err
 	}
-	model.consistency = append(model.consistency, eventstore.ConsistencyObservation{Query: effective, Position: loaded.ContextPosition})
-	facts := eventstore.EventsFromLatest(loaded.Results)
-	if len(facts) != 1 {
-		return nil, eventstore.ErrNotFound
-	}
-	accepted, err := DecodeUserRegisteredEvent(facts[0].Event)
-	if err != nil {
-		return nil, err
-	}
-	if !facts[0].Position.After(model.validatedPosition) || !registrationAcceptanceMatches(model.started, model.validated, accepted) {
+	if !acceptedFact.Position.After(model.validatedPosition) || !registrationAcceptanceMatches(model.started, model.validated, accepted) {
 		return nil, eventstore.ErrConflict
 	}
+
 	return model, nil
 }
 func completeUserRegistrationWorkflowQuery(id string) eventstore.Query {
@@ -132,9 +172,13 @@ func completeUserRegistrationWorkflowQuery(id string) eventstore.Query {
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistrationFailed}, {Key: ScopeUserRegistrationStartedIDField, Value: id}}},
 	}}
 }
-func completeUserRegistrationEffectiveQuery(id string) eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredIDField, Value: id}}}}}
-}
 func registrationAcceptanceMatches(start UserRegistrationStartedEvent, validated EmailVerificationOTPValidatedEvent, accepted UserRegisteredEvent) bool {
 	return accepted.UserRegisteredID == start.UserID && accepted.UsernameHash == start.UsernameHash && accepted.EmailHash == start.EmailHash && accepted.FirstName.BlindIndex == start.FirstName.BlindIndex && accepted.LastName.BlindIndex == start.LastName.BlindIndex && accepted.YearOfBirth == start.YearOfBirth && accepted.PasswordHash == start.PasswordHash && accepted.EmailVerifiedAt == validated.ValidatedAt
+}
+
+func completeUserRegistrationSourceQuery(userID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistrationStarted}, {Key: "userId", Value: userID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredIDField, Value: userID}}},
+	}}
 }

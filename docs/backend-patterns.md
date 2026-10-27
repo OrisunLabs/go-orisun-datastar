@@ -125,19 +125,23 @@ A reset request requires a decoded registration event matching the resolved user
 
 Both commands retain their existing query shapes and exact observed context positions. Real-Orisun regressions cover owner mismatches, missing registration/request, valid requests, reused resets and inconsistent completion ancestry. A gated concurrent-read test verifies two attempts cannot both complete the same reset. No event-format changes, migrations or data resets are introduced.
 
-## Deletion completion identity
+## Account deletion request, effect and completion
 
-Deletion completion loads the exact request ID and its completion evidence, then strictly checks the registered-user identity, auth-user ID and request ancestry before any destructive effect or idempotent return. Data deletion, key destruction and the saved completion use identities from the validated request. A later request for the same user cannot replace the authority selected for an earlier delivery. Exact retries perform no repeated effects; inconsistent historical completion facts are rejected.
+`AccountDeletionRequested` freezes complete deletion input and a distinct `operationId`. A new request observes accepted-user/password authority and existing deletion facts together, then takes a separate collision observation for its freshly allocated request and domain identities. Exact retries reuse the committed operation.
 
-The bounded source query uses the existing `account_deletion_requested_id` and `deletion_ancestry` indexes, with `eventType` in both criteria. The exact returned observation position remains the save guard. Real-Orisun regressions cover mismatched command identities, malformed/missing requests, inconsistent completion owners, later requests and repeated delivery. The existing data-deletion/key-destruction/event-save order is unchanged; this slice does not make external effects atomic with event persistence. No schema migration or data reset is introduced.
+The request reaction invokes only `DeleteAccountCommandHandler`. This independent domain command accepts complete trusted input, checks registration and content-bound effective-operation identity, performs data deletion followed by subject-key destruction, and saves `AccountDeleted`. The effective fact scopes only the accepted user; it contains no deletion-request reference. Direct backend deletion uses the same command without a workflow.
+
+The `AccountDeleted` reaction invokes only `CompleteAccountDeletionCommandHandler`. That command correlates the request by operation ID and proves matching user/auth identities and full-position ordering after authorization. It emits `AccountDeletionCompleted` referencing the exact request and effective deletion. Direct domain deletions have no workflow to complete. Completion performs no cleanup and can run after all auth rows and subject keys are gone.
+
+Known domain operations skip external effects. Cleanup and event saving retain their existing order and at-least-once retry behavior: a failure after cleanup but before the domain append can repeat idempotent cleanup. Workflow completion retries never repeat it. This is a fresh-install event-contract change; no history conversion, database reset or reseed is performed. Native PostgreSQL checks use isolated schemas and verify removal of only the selected account’s data/key, continued login for another account, and completion after key erasure.
 
 ## Authoritative passwords for mutations
 
-Password changes and account-deletion requests use the credential read model only to verify the caller's identity. Their behavior-owned context loaders reconstruct the effective hash from strict `UserRegistered`, `PasswordChanged` and `PasswordResetCompleted` events. Registration supplies the initial hash; the latest change/reset fact by full commit/prepare position supplies the current hash. Both commands require registration, reject mismatched owners or malformed facts and verify the submitted password against this authoritative state. A lagging credential projection cannot keep an old password valid or reject a newly accepted one for these mutations.
+Password changes and account-deletion requests use the credential read model only to verify the caller's identity. Their behavior-owned context loaders reconstruct the effective hash from strict `UserRegistered`, `PasswordChanged` events. Registration supplies the initial hash; the latest effective password-change fact by full commit/prepare position supplies the current hash. Both commands require registration, reject mismatched owners or malformed facts and verify the submitted password against this authoritative state. A lagging credential projection cannot keep an old password valid or reject a newly accepted one for these mutations.
 
-Each loader batches all known criteria into one latest-event read and retains its exact query and returned context position for the terminal append. Password-change criteria now include reset completion; deletion-request criteria now include both password update types. The existing `auth_user_ancestry` index covers their event types and `scopes.userRegisteredId` predicate; registration uses its existing identity index. No new index or event format is required.
+Each loader batches all known criteria into one latest-event read and retains its exact query and returned context position for the terminal append. Both loaders observe registration and effective password changes; deletion requests also observe their own deletion workflow. The existing `auth_user_ancestry` index covers their event types and `scopes.userRegisteredId` predicate; registration uses its existing identity index. No new index or event format is required.
 
-Real-Orisun regressions cover initial credentials, projection lag after changes/resets, both change/reset orderings, foreign-user facts, missing registration and malformed reset history. Injecting either password update after the authority read makes both commands fail atomically with no additional mutation. Session/login authentication continues to use its existing read-model path; this slice changes password-authorized mutations only. No schema migration or data reset is introduced.
+Real-Orisun regressions cover initial credentials, projection lag after changes/resets, both change/reset orderings, foreign-user facts, missing registration and malformed reset history. Injecting an effective password update after the authority read makes both commands fail atomically with no additional mutation. Session/login authentication continues to use its existing read-model path; this slice changes password-authorized mutations only. No schema migration or data reset is introduced.
 
 ## Email retry after PII erasure
 
@@ -145,7 +149,7 @@ OTP and reset-email context loaders strictly decode their source and sent-receip
 
 The commands and email reactions consume only the subject-key read capability. Existing bounded query shapes, exact consistency observations and one terminal V2 save are retained. Real-Orisun regressions cover replay after actual key destruction, unavailable key services, malformed source/receipt history, unsent messages without keys and foreign-owner OTPs. This change does not provide exactly-once external delivery: sending followed by a failed receipt append retains the existing at-least-once retry behavior. No event-format change, migration or data reset is introduced.
 
-Deletion-request retries also validate the stored completion against the selected request ID and auth-user ID. A completion without its request, a different request backlink or a different auth identity is rejected before treating the command as a no-op. Real-Orisun regressions verify these failures append nothing, while pending/completed matching requests return their existing identity on retry. Query shapes, indexes and consistency observations are unchanged.
+Deletion-request retries bind any existing effective deletion to the request’s frozen operation and auth identity. The separate completion command validates the exact request/effect/receipt relationship; malformed or inconsistent evidence never produces a success fact.
 
 ## OTP validation context identity
 
@@ -156,3 +160,17 @@ The latest OTP is selected by full source position, with invalid contracts/times
 ## Registration proposal and acceptance
 
 See [registration workflow](registration-workflow.md). Signup records `UserRegistrationStarted`; OTP facts authorize that pending workflow. Only the independent domain command emits `UserRegistered`, carrying the full accepted details and verification time. Auth and profile projections do not need pending registration or OTP history.
+
+## Password reset authorization and domain effect
+
+Token submission records `PasswordResetAuthorized`, freezing the password hash and a separately allocated domain operation ID after checking authoritative token ownership, hash and expiry. Retries reuse that authorization. The independent `SetPasswordCommandHandler` accepts complete trusted input and emits `PasswordChanged` scoped only to the accepted user. It has no reset-workflow dependencies.
+
+HTTP acknowledges authorization. A checkpointed authorization reaction invokes only `SetPasswordCommandHandler`; a separate `PasswordChanged` reaction invokes only `CompletePasswordResetCommandHandler`. `PasswordResetCompleted` references the authorization and exact effective change, with no password hash. Completion proves matching owner/hash and source position after authorization. A historical retry never reapplies an older password after a newer direct change. Password-authorized commands and credential projections read effective facts only. This is a fresh-install event-contract change; no history conversion or data reset is performed.
+
+Registration uses the same two-reaction boundary: OTP validation triggers only the independent registration command; `UserRegistered` triggers only completion. Reactions translate source input and attach metadata. Command handlers decide authority, completion applicability and idempotency. No finalizer loads workflow status to choose commands, and HTTP does not execute subsequent stages. Frozen registration input remains protected through execution, so historical delivery reaches domain idempotency without subject-key access.
+
+## Name-command authority
+
+`UpdateUserNameCommand` carries the accepted user ID and requested name; it does not carry a UI user object. HTTP supplies the authenticated identity. The command’s private context strictly decodes and binds selected registration/name facts before key access, checks source ordering, and reconstructs the current name from the latest effective fact. Registration names and username provide the initial fallback. Decrypted values must be normalized and agree with their field-specific blind indexes.
+
+The command needs only the subject-key read capability. Unchanged input appends nothing; a concurrent rename invalidates the original exact observation. The two existing registration/name criteria, source indexes, event contract and projection schema are unchanged. Real-Orisun and HTTP regressions cover ownership, malformed authority, plaintext commitments, initial-name fallback, unchanged retries, concurrent writes and authenticated identity despite unrelated form/view fields.

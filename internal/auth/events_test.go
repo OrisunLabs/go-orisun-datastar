@@ -55,10 +55,12 @@ func TestAuthContractsRejectMalformedFactsBeforeConsumerEffects(t *testing.T) {
 		mustAuthEvent(NewEmailVerificationOTPSentEvent(uuidv7.NewString(), now, otp, nil)),
 		mustAuthEvent(NewPasswordResetRequestedEvent(request, "test@example.com", "token", now, user, key, nil)),
 		mustAuthEvent(NewPasswordResetEmailSentEvent(uuidv7.NewString(), now, request, nil)),
-		mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), now, request, user, hash, nil)),
+		mustAuthEvent(NewPasswordResetAuthorizedEvent(uuidv7.NewString(), uuidv7.NewString(), request, user, hash, now, nil)),
+		mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), now, request, user, uuidv7.NewString(), uuidv7.NewString(), nil)),
 		mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), now, user, hash, nil)),
-		mustAuthEvent(NewAccountDeletionRequestedEvent(deletion, now, user, user, nil)),
-		mustAuthEvent(NewAccountDeletedEvent(uuidv7.NewString(), now, deletion, user, user, nil)),
+		mustAuthEvent(NewAccountDeletionRequestedEvent(deletion, now, user, user, uuidv7.NewString(), nil)),
+		mustAuthEvent(NewAccountDeletedEvent(uuidv7.NewString(), now, user, user, nil)),
+		mustAuthEvent(NewAccountDeletionCompletedEvent(uuidv7.NewString(), now, deletion, uuidv7.NewString(), user, user, nil)),
 		mustAuthEvent(NewLoginAttemptRecordedEvent(uuidv7.NewString(), now, "unknown@example.com", "127.0.0.1", "", false, nil)),
 	}
 	for _, event := range events {

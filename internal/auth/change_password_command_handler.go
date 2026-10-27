@@ -71,7 +71,7 @@ type changePasswordContext struct {
 func loadChangePasswordContext(ctx context.Context, command ChangePasswordCommand, retriever eventstore.LatestRetriever) (*changePasswordContext, error) {
 	userQuery := changePasswordUserRegisteredQuery(command.User.UserRegisteredID)
 	passwordQuery := changePasswordPasswordChangedByUserQuery(command.User.UserRegisteredID)
-	query := changePasswordCombineQueries(userQuery, passwordQuery, changePasswordPasswordResetCompletedByUserQuery(command.User.UserRegisteredID))
+	query := changePasswordCombineQueries(userQuery, passwordQuery)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
@@ -111,15 +111,7 @@ func (m *changePasswordContext) handle(resolved eventstore.ResolvedEvent) error 
 			return eventstore.ErrInvalidEvent
 		}
 		hash = value.PasswordHash
-	case PasswordResetCompleted:
-		value, err := DecodePasswordResetCompletedEvent(resolved.Event)
-		if err != nil {
-			return err
-		}
-		if value.Scopes.UserRegisteredID != m.userRegisteredID {
-			return eventstore.ErrInvalidEvent
-		}
-		hash = value.PasswordHash
+
 	default:
 		return eventstore.ErrInvalidEvent
 	}
@@ -150,12 +142,5 @@ func changePasswordUserRegisteredQuery(userRegisteredID string) eventstore.Query
 	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
 		{Key: eventstore.EventTypeField, Value: UserRegistered},
 		{Key: UserRegisteredIDField, Value: userRegisteredID},
-	}}}}
-}
-
-func changePasswordPasswordResetCompletedByUserQuery(userRegisteredID string) eventstore.Query {
-	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{
-		{Key: eventstore.EventTypeField, Value: PasswordResetCompleted},
-		{Key: ScopeUserRegisteredIDField, Value: userRegisteredID},
 	}}}}
 }

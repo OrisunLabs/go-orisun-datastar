@@ -12,7 +12,9 @@ import (
 )
 
 const authCredentialOwner = `-- name: AuthCredentialOwner :one
-SELECT user_id FROM auth_account WHERE id = $1
+SELECT user_id
+FROM auth_account
+WHERE id = $1
 `
 
 func (q *Queries) AuthCredentialOwner(ctx context.Context, id string) (string, error) {
@@ -23,7 +25,10 @@ func (q *Queries) AuthCredentialOwner(ctx context.Context, id string) (string, e
 }
 
 const authOccurrenceOwner = `-- name: AuthOccurrenceOwner :one
-SELECT id FROM auth_user WHERE event_positions ? $1::text LIMIT 1
+SELECT id
+FROM auth_user
+WHERE event_positions ? $1::text
+LIMIT 1
 `
 
 func (q *Queries) AuthOccurrenceOwner(ctx context.Context, occurrenceKey string) (string, error) {
@@ -34,13 +39,26 @@ func (q *Queries) AuthOccurrenceOwner(ctx context.Context, occurrenceKey string)
 }
 
 const loadAuthProjection = `-- name: LoadAuthProjection :one
-SELECT u.id,u.user_registered_id,u.name,coalesce(u.username,'')::text AS username,u.email,
- coalesce(u.image,'')::text AS image,u.bio,u.header_image_url,
- u.email_verified,u.email_verified_at,
- u.last_event_commit_position,u.last_event_prepare_position,
- a.id AS credential_id,a.account_id,a.provider_id,a.user_id,coalesce(a.password,'')::text AS password
-FROM auth_user u LEFT JOIN auth_account a ON a.id=u.id||':credential'
-WHERE u.id= $1 FOR UPDATE OF u
+SELECT u.id,
+       u.user_registered_id,
+       u.name,
+       coalesce(u.username, '')::text AS username,
+       u.email,
+       coalesce(u.image, '')::text    AS image,
+       u.bio,
+       u.header_image_url,
+       u.email_verified,
+       u.email_verified_at,
+       u.last_event_commit_position,
+       u.last_event_prepare_position,
+       a.id                           AS credential_id,
+       a.account_id,
+       a.provider_id,
+       a.user_id,
+       coalesce(a.password, '')::text AS password
+FROM auth_user u
+         LEFT JOIN auth_account a ON a.id = u.id || ':credential'
+WHERE u.id = $1 FOR UPDATE OF u
 `
 
 type LoadAuthProjectionRow struct {
@@ -89,7 +107,9 @@ func (q *Queries) LoadAuthProjection(ctx context.Context, id string) (LoadAuthPr
 }
 
 const loadAuthVerificationInput = `-- name: LoadAuthVerificationInput :one
-SELECT id, identifier, value, expires_at, created_at, updated_at FROM auth_verification WHERE id= $1
+SELECT id, identifier, value, expires_at, created_at, updated_at
+FROM auth_verification
+WHERE id = $1
 `
 
 func (q *Queries) LoadAuthVerificationInput(ctx context.Context, id string) (AuthVerification, error) {
@@ -116,8 +136,8 @@ func (q *Queries) LockAuthProjection(ctx context.Context) error {
 }
 
 const saveAuthCredential = `-- name: SaveAuthCredential :exec
-INSERT INTO auth_account(id,account_id,provider_id,user_id,password)
-VALUES($1,$2,'credential',$3,$4)
+INSERT INTO auth_account(id, account_id, provider_id, user_id, password)
+VALUES ($1, $2, 'credential', $3, $4)
 ON CONFLICT(id) DO UPDATE SET password=excluded.password
 `
 
@@ -139,14 +159,20 @@ func (q *Queries) SaveAuthCredential(ctx context.Context, arg SaveAuthCredential
 }
 
 const saveAuthProjection = `-- name: SaveAuthProjection :exec
-INSERT INTO auth_user(id,user_registered_id,name,username,display_username,email,email_verified,image,bio,header_image_url,
- email_verified_at,event_positions,last_event_commit_position,last_event_prepare_position)
-VALUES($1,$1,$2,$3,$3,$4,$5,$6,$7,$8,
- $9,$10,$11,$12)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name,email_verified=excluded.email_verified,image=excluded.image,bio=excluded.bio,header_image_url=excluded.header_image_url,
- email_verified_at=excluded.email_verified_at,
- event_positions=auth_user.event_positions||excluded.event_positions,
- last_event_commit_position=excluded.last_event_commit_position,last_event_prepare_position=excluded.last_event_prepare_position
+INSERT INTO auth_user(id, user_registered_id, name, username, display_username, email, email_verified, image, bio,
+                      header_image_url,
+                      email_verified_at, event_positions, last_event_commit_position, last_event_prepare_position)
+VALUES ($1, $1, $2, $3, $3, $4, $5, $6, $7, $8,
+        $9, $10, $11, $12)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,
+                              email_verified=excluded.email_verified,
+                              image=excluded.image,
+                              bio=excluded.bio,
+                              header_image_url=excluded.header_image_url,
+                              email_verified_at=excluded.email_verified_at,
+                              event_positions=auth_user.event_positions || excluded.event_positions,
+                              last_event_commit_position=excluded.last_event_commit_position,
+                              last_event_prepare_position=excluded.last_event_prepare_position
 `
 
 type SaveAuthProjectionParams struct {
@@ -183,8 +209,8 @@ func (q *Queries) SaveAuthProjection(ctx context.Context, arg SaveAuthProjection
 }
 
 const saveAuthVerificationInput = `-- name: SaveAuthVerificationInput :exec
-INSERT INTO auth_verification(id,identifier,value,expires_at)
-VALUES($1,$2,$3,$4)
+INSERT INTO auth_verification(id, identifier, value, expires_at)
+VALUES ($1, $2, $3, $4)
 `
 
 type SaveAuthVerificationInputParams struct {

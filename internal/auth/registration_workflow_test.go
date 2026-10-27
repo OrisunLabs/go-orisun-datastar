@@ -3,16 +3,13 @@ package auth
 import (
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
-
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"golang.org/x/crypto/bcrypt"
+	"sync"
+	"testing"
+	"time"
 )
 
 func stagedRegistration(t *testing.T, store *eventstore.EmbeddedOrisun, keys *authTestKeys) StartUserRegistrationResult {
@@ -33,215 +30,173 @@ func verifyStagedRegistration(t *testing.T, store *eventstore.EmbeddedOrisun, re
 		t.Fatal(err)
 	}
 }
-func TestRegistrationWorkflowProducesIndependentAcceptedFact(t *testing.T) {
+
+func executeRegistrationForTest(t *testing.T, store *eventstore.EmbeddedOrisun, keys SubjectPiiKeyReader) {
+	t.Helper()
+	execute := &RegistrationExecutionEventHandler{saver: store, retriever: store, keys: keys}
+	for _, e := range resetOutcomeFacts(t, store, EmailVerificationOTPValidated) {
+		if err := execute.handle(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+func completeRegistrationForTest(t *testing.T, store *eventstore.EmbeddedOrisun) {
+	t.Helper()
+	complete := &RegistrationCompletionEventHandler{saver: store, retriever: store}
+	for _, e := range resetOutcomeFacts(t, store, UserRegistered) {
+		if err := complete.handle(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+func TestRegistrationReactionsHaveSeparateResponsibilities(t *testing.T) {
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	result := stagedRegistration(t, store, keys)
-	if result.UserID == result.UserRegistrationStartedID {
-		t.Fatal("workflow and user identities were reused")
-	}
+	pending := stagedRegistration(t, store, keys)
+	verifyStagedRegistration(t, store, pending)
 	if len(resetOutcomeFacts(t, store, UserRegistered)) != 0 {
-		t.Fatal("starting registration created an accepted user")
+		t.Fatal("validation executed registration")
 	}
-	started := resetOutcomeFacts(t, store, UserRegistrationStarted)[0]
-	generation := &RegistrationOTPToBeGeneratedEventHandler{saver: store, retriever: store}
-	if err := generation.handle(t.Context(), started); err != nil {
-		t.Fatal(err)
+	executeRegistrationForTest(t, store, keys)
+	if len(resetOutcomeFacts(t, store, UserRegistered)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 0 {
+		t.Fatal("execution also completed workflow")
 	}
-	if err := generation.handle(t.Context(), started); err != nil {
-		t.Fatal(err)
-	}
-	generated := resetOutcomeFacts(t, store, EmailVerificationOTPGenerated)
-	if len(generated) != 1 {
-		t.Fatal("registration replay duplicated OTP")
-	}
-	value, err := DecodeEmailVerificationOTPGeneratedEvent(generated[0].Event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if value.Scopes.UserRegistrationStartedID != result.UserRegistrationStartedID {
-		t.Fatal("OTP refers to a user instead of pending registration")
-	}
-	sender := &commandTestEmailSender{}
-	delivery := &EmailValidationOTPToBeSentEventHandler{saver: store, retriever: store, sender: sender, keys: keys}
-	for range 2 {
-		if err := delivery.handle(t.Context(), generated[0]); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(sender.messages) != 1 || sender.messages[0].To != "staged@example.com" {
-		t.Fatal("pending registration email delivery failed")
-	}
-	command := ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: result.UserRegistrationStartedID, Code: "invalid"}
-	if err := ValidateEmailVerificationOTPCommandHandler(t.Context(), command, store, store); err == nil {
-		t.Fatal("wrong OTP accepted")
-	}
-	if err := FinalizeUserRegistration(t.Context(), result.UserRegistrationStartedID, nil, store, store, keys); !errors.Is(err, eventstore.ErrNotFound) {
-		t.Fatalf("unverified workflow could finalize: %v", err)
-	}
-	command.Code = value.OTPCode
-	for range 2 {
-		if err := ValidateEmailVerificationOTPCommandHandler(t.Context(), command, store, store); err != nil {
-			t.Fatal(err)
-		}
-	}
-	validated := resetOutcomeFacts(t, store, EmailVerificationOTPValidated)
-	if len(validated) != 1 || len(resetOutcomeFacts(t, store, UserRegistered)) != 0 {
-		t.Fatal("OTP validation prematurely created domain state or duplicated validation")
-	}
-	reaction := &RegistrationCompletionEventHandler{saver: store, retriever: store, keys: keys}
-	if err := reaction.handle(t.Context(), validated[0]); err != nil {
-		t.Fatal(err)
-	}
+	completeRegistrationForTest(t, store)
 	accepted := resetOutcomeFacts(t, store, UserRegistered)
-	if len(accepted) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
-		t.Fatal("missing accepted fact/workflow completion")
+	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
+		t.Fatal("domain effect did not complete workflow")
 	}
-	registered, err := DecodeUserRegisteredEvent(accepted[0].Event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	confirmation, err := DecodeEmailVerificationOTPValidatedEvent(validated[0].Event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if registered.UserRegisteredID != result.UserID || registered.EmailVerifiedAt != confirmation.ValidatedAt || registered.RegisteredAt == "" {
-		t.Fatal("accepted identity or verification fact missing")
-	}
-	if _, exists := accepted[0].Event.Data["scopes"]; exists {
-		t.Fatal("accepted user depends on workflow ancestry")
+	if _, ok := accepted[0].Event.Data["scopes"]; ok {
+		t.Fatal("accepted fact depends on workflow")
 	}
 	projection := &authProjectionFake{states: map[string]AuthState{}, receipts: map[eventstore.Position]string{}, facts: map[string]VerificationFact{}}
 	if err := ProjectBatch(t.Context(), accepted, projection, keys, ProfileSource{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	user := projection.states[result.UserID]
-	if !user.EmailVerified || user.Verification == nil || user.Name != "Staged User" || user.Email != "staged@example.com" || user.Username != "staged-user" {
-		t.Fatal("accepted fact alone cannot reconstruct user")
+	if user := projection.states[pending.UserID]; !user.EmailVerified || user.Email != "staged@example.com" || user.Name != "Staged User" {
+		t.Fatal("accepted fact not self-contained")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte("secret123")); err != nil {
-		t.Fatal("password missing from accepted fact")
-	}
-	if err := keys.DestroySubjectKey(t.Context(), result.UserID); err != nil {
-		t.Fatal(err)
-	}
-	if err := reaction.handle(t.Context(), validated[0]); err != nil {
-		t.Fatalf("completed workflow needed erased key on retry: %v", err)
-	}
-	if len(resetOutcomeFacts(t, store, UserRegistered)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
-		t.Fatal("retry duplicated final facts")
-	}
-}
-func TestPendingRegistrationsDoNotReserveDomainIdentity(t *testing.T) {
-	store := eventstoretest.New(t)
-	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	first, second := stagedRegistration(t, store, keys), stagedRegistration(t, store, keys)
-	verifyStagedRegistration(t, store, first)
-	verifyStagedRegistration(t, store, second)
-	if err := FinalizeUserRegistration(t.Context(), first.UserRegistrationStartedID, nil, store, store, keys); err != nil {
+	if err := keys.DestroySubjectKey(t.Context(), pending.UserID); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := FinalizeUserRegistration(t.Context(), second.UserRegistrationStartedID, nil, store, store, keys); !errors.Is(err, ErrRegistrationIdentityUnavailable) {
-			t.Fatal(err)
-		}
+		executeRegistrationForTest(t, store, keys)
+		completeRegistrationForTest(t, store)
 	}
-	failed := resetOutcomeFacts(t, store, UserRegistrationFailed)
-	if len(failed) != 1 || len(resetOutcomeFacts(t, store, UserRegistered)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
-		t.Fatal("identity collision created a second user or repeated workflow failure")
+	if len(resetOutcomeFacts(t, store, UserRegistered)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
+		t.Fatal("reactions duplicated outcomes")
 	}
-	reaction := &RegistrationCompletionEventHandler{saver: store, retriever: store, keys: keys}
-	for _, validated := range resetOutcomeFacts(t, store, EmailVerificationOTPValidated) {
-		if err := reaction.handle(t.Context(), validated); err != nil {
-			t.Fatal("terminal workflow failure blocks reaction checkpoint")
-		}
+}
+func directRegistrationCommand(t *testing.T, id, username, email string, keys *authTestKeys) RegisterUserCommand {
+	t.Helper()
+	key, err := keys.GetOrCreateSubjectDataKey(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
 	}
+	details, err := protectRegistrationDetails(username, email, "", "", 0, testAuthHash(t), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return RegisterUserCommand{UserRegisteredID: id, RegistrationDetails: details, EmailVerifiedAt: time.Unix(1, 0).UTC()}
 }
 func TestRegisterUserCommandIsIndependentAndContentBound(t *testing.T) {
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	command := RegisterUserCommand{UserRegisteredID: uuidv7.NewString(), Username: "direct-user", Email: "direct@example.com", PasswordHash: testAuthHash(t), EmailVerifiedAt: time.Unix(1, 0).UTC()}
+	command := directRegistrationCommand(t, uuidv7.NewString(), "direct-user", "direct@example.com", keys)
 	for range 2 {
 		if _, err := RegisterUserCommandHandler(t.Context(), command, store, store, keys); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(resetOutcomeFacts(t, store, UserRegistrationStarted)) != 0 || len(resetOutcomeFacts(t, store, EmailVerificationOTPValidated)) != 0 || len(resetOutcomeFacts(t, store, UserRegistered)) != 1 {
-		t.Fatal("domain command acquired workflow dependencies")
+	// Completion is invoked for every domain fact; direct registrations are no-ops.
+	completeRegistrationForTest(t, store)
+	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 0 {
+		t.Fatal("direct effect invented workflow")
 	}
-	command.FirstName = "Different"
+	command.YearOfBirth = 1990
 	if _, err := RegisterUserCommandHandler(t.Context(), command, store, store, keys); !errors.Is(err, eventstore.ErrConflict) {
-		t.Fatalf("identity accepted different terms: %v", err)
+		t.Fatalf("operation not content-bound: %v", err)
 	}
 	command.EmailVerifiedAt = time.Time{}
 	if _, err := RegisterUserCommandHandler(t.Context(), command, store, store, keys); err == nil {
-		t.Fatal("unverified accepted user allowed")
+		t.Fatal("accepted missing verification")
+	}
+}
+func TestCompetingRegistrationDoesNotDispatchAnotherCommand(t *testing.T) {
+	store := eventstoretest.New(t)
+	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
+	first := stagedRegistration(t, store, keys)
+	second := stagedRegistration(t, store, keys)
+	verifyStagedRegistration(t, store, first)
+	verifyStagedRegistration(t, store, second)
+	events := resetOutcomeFacts(t, store, EmailVerificationOTPValidated)
+	execution := &RegistrationExecutionEventHandler{saver: store, retriever: store, keys: keys}
+	if err := execution.handle(t.Context(), events[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.handle(t.Context(), events[1]); !errors.Is(err, ErrRegistrationIdentityUnavailable) {
+		t.Fatalf("expected identity conflict: %v", err)
+	}
+	if len(resetOutcomeFacts(t, store, UserRegistrationFailed)) != 0 {
+		t.Fatal("reaction selected failure command")
+	}
+	completeRegistrationForTest(t, store)
+	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
+		t.Fatal("failed attempt falsely completed")
 	}
 }
 
-func TestRegistrationWorkflowDoesNotAdoptEarlierDomainFact(t *testing.T) {
+func TestRegistrationCompletionRejectsEarlierEffect(t *testing.T) {
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	result := stagedRegistration(t, store, keys)
+	pending := stagedRegistration(t, store, keys)
 	started, err := DecodeUserRegistrationStartedEvent(resetOutcomeFacts(t, store, UserRegistrationStarted)[0].Event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated, err := GenerateEmailVerificationOTPCommandHandler(t.Context(), GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: result.UserRegistrationStartedID}, store, store)
-	if err != nil {
+	at := time.Now().UTC()
+	if _, err := RegisterUserCommandHandler(t.Context(), RegisterUserCommand{UserRegisteredID: pending.UserID, RegistrationDetails: started.RegistrationDetails, EmailVerifiedAt: at}, store, store, keys); err != nil {
 		t.Fatal(err)
 	}
-	verifiedAt := time.Unix(1, 0).UTC()
-	_, err = RegisterUserCommandHandler(t.Context(), RegisterUserCommand{UserRegisteredID: result.UserID, Username: "staged-user", Email: "staged@example.com", FirstName: "Staged", LastName: "User", YearOfBirth: 1990, PasswordHash: started.PasswordHash, EmailVerifiedAt: verifiedAt}, store, store, keys)
-	if err != nil {
-		t.Fatal(err)
-	}
-	validation := mustAuthEvent(NewEmailVerificationOTPValidatedEvent(uuidv7.NewString(), verifiedAt, generated.EmailVerificationOTPGeneratedID, result.UserRegistrationStartedID, nil))
+	// Source position, rather than matching wall-clock values, proves ordering.
+	validation := mustAuthEvent(NewEmailVerificationOTPValidatedEvent(uuidv7.NewString(), at, uuidv7.NewString(), pending.UserRegistrationStartedID, nil))
 	if _, err := store.SaveEventsV2(t.Context(), []eventstore.DomainEvent{validation}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := CompleteUserRegistrationCommandHandler(t.Context(), CompleteUserRegistrationCommand{UserRegistrationStartedID: result.UserRegistrationStartedID}, store, store); !errors.Is(err, eventstore.ErrConflict) {
-		t.Fatalf("earlier effective fact was adopted: %v", err)
+	if err := CompleteUserRegistrationCommandHandler(t.Context(), CompleteUserRegistrationCommand{UserRegisteredID: pending.UserID}, store, store); !errors.Is(err, eventstore.ErrConflict) {
+		t.Fatalf("adopted earlier accepted fact: %v", err)
 	}
-	if err := FinalizeUserRegistration(t.Context(), result.UserRegistrationStartedID, nil, store, store, keys); !errors.Is(err, ErrRegistrationIdentityUnavailable) {
-		t.Fatal(err)
-	}
-	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 0 || len(resetOutcomeFacts(t, store, UserRegistrationFailed)) != 1 {
-		t.Fatal("workflow falsely claimed an earlier direct registration")
+	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 0 {
+		t.Fatal("false completion")
 	}
 }
 
-func TestConcurrentRegistrationFinalizationKeepsOneEffectiveIdentity(t *testing.T) {
+func TestRegistrationExecutionConcurrentIdentityGuard(t *testing.T) {
 	store := eventstoretest.New(t)
 	keys := &authTestKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	registrations := []StartUserRegistrationResult{stagedRegistration(t, store, keys), stagedRegistration(t, store, keys)}
-	for _, registration := range registrations {
-		verifyStagedRegistration(t, store, registration)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	first := stagedRegistration(t, store, keys)
+	second := stagedRegistration(t, store, keys)
+	verifyStagedRegistration(t, store, first)
+	verifyStagedRegistration(t, store, second)
 	ready := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
 	defer unblock()
-	var reads atomic.Int32
 	retriever := resetLatestFunc(func(ctx context.Context, criteria []eventstore.Criterion) (eventstore.LatestByCriteriaResult, error) {
 		latest, err := store.GetLatestByCriteria(ctx, criteria)
 		if err != nil {
 			return latest, err
 		}
-		domain := len(criteria) == 3
-		for _, criterion := range criteria {
-			hasType := false
-			for _, tag := range criterion.Tags {
-				if tag.Key == eventstore.EventTypeField && tag.Value == UserRegistered {
-					hasType = true
+		effective := false
+		for _, c := range criteria {
+			for _, tag := range c.Tags {
+				if tag.Key == UserRegisteredUsernameHashField {
+					effective = true
 				}
 			}
-			domain = domain && hasType
 		}
-		if domain && reads.Add(1) <= 2 {
+		if effective {
 			ready <- struct{}{}
 			select {
 			case <-release:
@@ -251,41 +206,39 @@ func TestConcurrentRegistrationFinalizationKeepsOneEffectiveIdentity(t *testing.
 		}
 		return latest, nil
 	})
-	outcomes := make(chan error, 2)
-	for _, registration := range registrations {
-		go func(id string) { outcomes <- FinalizeUserRegistration(ctx, id, nil, store, retriever, keys) }(registration.UserRegistrationStartedID)
+	reaction := &RegistrationExecutionEventHandler{saver: store, retriever: retriever, keys: keys}
+	results := make(chan error, 2)
+	for _, e := range resetOutcomeFacts(t, store, EmailVerificationOTPValidated) {
+		go func(e eventstore.ResolvedEvent) { results <- reaction.handle(t.Context(), e) }(e)
 	}
 	for range 2 {
 		select {
 		case <-ready:
 		case <-time.After(5 * time.Second):
-			t.Fatal("domain admissions were not concurrent")
+			t.Fatal("executions did not reach effective authority")
 		}
 	}
 	unblock()
-	success := 0
+	successes, conflicts := 0, 0
 	for range 2 {
 		select {
-		case err := <-outcomes:
+		case err := <-results:
 			if err == nil {
-				success++
-			} else if !errors.Is(err, eventstore.ErrConflict) && !errors.Is(err, ErrRegistrationIdentityUnavailable) {
+				successes++
+			} else if errors.Is(err, eventstore.ErrConflict) {
+				conflicts++
+			} else {
 				t.Fatal(err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatal("finalization did not finish")
+			t.Fatal("execution did not finish")
 		}
 	}
-	if success != 1 {
-		t.Fatal("concurrent workflows admitted more than one identity")
+	if successes != 1 || conflicts != 1 || len(resetOutcomeFacts(t, store, UserRegistered)) != 1 {
+		t.Fatal("concurrent execution duplicated accepted identity")
 	}
-	for _, registration := range registrations {
-		err := FinalizeUserRegistration(t.Context(), registration.UserRegistrationStartedID, nil, store, store, keys)
-		if err != nil && !errors.Is(err, ErrRegistrationIdentityUnavailable) {
-			t.Fatal(err)
-		}
-	}
-	if len(resetOutcomeFacts(t, store, UserRegistered)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 || len(resetOutcomeFacts(t, store, UserRegistrationFailed)) != 1 {
-		t.Fatal("racing finalizers duplicated or lost terminal facts")
+	completeRegistrationForTest(t, store)
+	if len(resetOutcomeFacts(t, store, UserRegistrationCompleted)) != 1 {
+		t.Fatal("accepted effect did not complete its workflow")
 	}
 }

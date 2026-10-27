@@ -13,6 +13,7 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -342,9 +343,8 @@ func TestPostgresRegistrationProjectsOnlyAcceptedUser(t *testing.T) {
 	if _, _, err := sessions.Login(t.Context(), "staged@example.com", "secret123"); err == nil {
 		t.Fatal("pending registration could log in")
 	}
-	if err := FinalizeUserRegistration(t.Context(), pending.UserRegistrationStartedID, nil, store, store, keys); err != nil {
-		t.Fatal(err)
-	}
+	executeRegistrationForTest(t, store, keys)
+	completeRegistrationForTest(t, store)
 	accepted := resetOutcomeFacts(t, store, UserRegistered)
 	// No workflow history is delivered to this fresh domain projection.
 	if err := ProjectBatch(t.Context(), accepted, repo, keys, ProfileSource{}, nil); err != nil {
@@ -356,5 +356,160 @@ func TestPostgresRegistrationProjectsOnlyAcceptedUser(t *testing.T) {
 	}
 	if err := ProjectBatch(t.Context(), accepted, repo, nil, ProfileSource{}, nil); err != nil {
 		t.Fatalf("accepted replay required workflow or decryption: %v", err)
+	}
+}
+
+func TestPostgresPasswordResetProjectsOnlyEffectivePasswordChange(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	history, keys := authProjectionHistory(t)
+	root := history[0].Event
+	registered, err := DecodeUserRegisteredEvent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := registered.UserRegisteredID
+	request := uuidv7.NewString()
+	requested := mustAuthEvent(NewPasswordResetRequestedEvent(request, "alice@example.com", "token", time.Now().Add(time.Hour), owner, keys.keys[owner], nil))
+	store := eventstoretest.New(t, root, requested)
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, UserRegistered), repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	sessions := NewSessionManager(pool, NewAuthUserStore(pool), false)
+	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "secret123"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, resetCandidateUser{user: views.User{ID: owner, UserRegisteredID: owner}}, store, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, PasswordResetAuthorized), repo, nil, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "updated123"); err == nil {
+		t.Fatal("authorization changed credentials")
+	}
+	execution := &PasswordResetExecutionEventHandler{saver: store, retriever: store}
+	if err := execution.handle(t.Context(), resetOutcomeFacts(t, store, PasswordResetAuthorized)[0]); err != nil {
+		t.Fatal(err)
+	}
+	completion := &PasswordResetCompletionEventHandler{saver: store, retriever: store}
+	if err := completion.handle(t.Context(), resetOutcomeFacts(t, store, PasswordChanged)[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliver completion before the effect to prove it cannot mutate credentials.
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, PasswordResetCompleted), repo, nil, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "secret123"); err != nil {
+		t.Fatal("workflow completion changed credentials")
+	}
+	effects := resetOutcomeFacts(t, store, PasswordChanged)
+	if err := ProjectBatch(t.Context(), effects, repo, nil, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "updated123"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "secret123"); err == nil {
+		t.Fatal("old password still accepted")
+	}
+	if err := ProjectBatch(t.Context(), effects, repo, nil, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresDeletionSeparatesRequestCleanupAndCompletion(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	keys := NewSubjectPiiKeyStore(pool, protectedpii.FromEnv())
+	owner, foreign := uuidv7.NewString(), uuidv7.NewString()
+	ownerKey, err := keys.GetOrCreateSubjectDataKey(t.Context(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignKey, err := keys.GetOrCreateSubjectDataKey(t.Context(), foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := testAuthHash(t)
+	at := time.Unix(1, 0).UTC()
+	root := mustAuthEvent(NewUserRegisteredEvent(owner, "deleting-user", "deleting@example.com", "Deleting", "User", 1990, hash, at, at, ownerKey, nil))
+	other := mustAuthEvent(NewUserRegisteredEvent(foreign, "retained-user", "retained@example.com", "Retained", "User", 1990, hash, at, at, foreignKey, nil))
+	store := eventstoretest.New(t, root, other)
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, UserRegistered), repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	users := NewAuthUserStore(pool)
+	sessions := NewSessionManager(pool, users, false)
+	user, _, err := sessions.Login(t.Context(), "deleting@example.com", "secret123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"INSERT INTO auth_verification(id,identifier,value,expires_at) VALUES ('deletion-token','password-reset:'||$1,'token',now()+interval '1 hour')",
+		"INSERT INTO profile_stats(user_id,last_event_commit_position,last_event_prepare_position) VALUES ($1,0,0)",
+		"INSERT INTO todo_items(todo_id,user_id,title,last_event_commit_position,last_event_prepare_position,created_at,updated_at) VALUES ('deletion-todo',$1,'Delete me',0,0,now(),now())",
+	} {
+		if _, err := pool.Exec(t.Context(), statement, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := func() []int {
+		t.Helper()
+		counts := make([]int, 7)
+		err := pool.QueryRow(t.Context(), `SELECT
+   (SELECT count(*) FROM auth_user WHERE user_registered_id=$1),
+   (SELECT count(*) FROM auth_account WHERE user_id=$1),
+   (SELECT count(*) FROM auth_session WHERE user_id=$1),
+   (SELECT count(*) FROM auth_verification WHERE identifier='password-reset:'||$1),
+   (SELECT count(*) FROM profile_stats WHERE user_id=$1),
+   (SELECT count(*) FROM todo_items WHERE user_id=$1),
+   (SELECT count(*) FROM subject_pii_keys WHERE subject_id=$1)`, owner).Scan(&counts[0], &counts[1], &counts[2], &counts[3], &counts[4], &counts[5], &counts[6])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return counts
+	}
+	if _, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, users, store, store); err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range snapshot() {
+		if count != 1 {
+			t.Fatal("request modified data or keys")
+		}
+	}
+	execution := &AccountDeletionEventHandler{data: NewAccountDataDeletionStore(pool, nil), keys: keys, saver: store, events: store}
+	source := resetOutcomeFacts(t, store, AccountDeletionRequested)[0]
+	if err := execution.handle(t.Context(), source); err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range snapshot() {
+		if count != 0 {
+			t.Fatal("domain cleanup retained owned rows or subject key")
+		}
+	}
+	if len(resetOutcomeFacts(t, store, AccountDeletionCompleted)) != 0 {
+		t.Fatal("execution completed workflow")
+	}
+	if _, _, err := sessions.Login(t.Context(), "deleting@example.com", "secret123"); err == nil {
+		t.Fatal("deleted account still logs in")
+	}
+	completion := &AccountDeletionCompletionEventHandler{saver: store, retriever: store}
+	for range 2 {
+		if err := execution.handle(t.Context(), source); err != nil {
+			t.Fatal(err)
+		}
+		if err := completion.handle(t.Context(), resetOutcomeFacts(t, store, AccountDeleted)[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(resetOutcomeFacts(t, store, AccountDeleted)) != 1 || len(resetOutcomeFacts(t, store, AccountDeletionCompleted)) != 1 {
+		t.Fatal("replay duplicated outcomes")
+	}
+	if _, _, err := sessions.Login(t.Context(), "retained@example.com", "secret123"); err != nil {
+		t.Fatal("deletion affected unrelated account")
+	}
+	if _, ok, err := keys.GetSubjectDataKey(t.Context(), foreign); err != nil || !ok {
+		t.Fatal("deletion destroyed unrelated subject key")
 	}
 }

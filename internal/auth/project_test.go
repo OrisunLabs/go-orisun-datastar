@@ -28,7 +28,7 @@ func authProjectionHistory(t *testing.T) ([]eventstore.ResolvedEvent, *authTestK
 		mustAuthEvent(NewUserNameChangedEvent(uuidv7.NewString(), "Alice Changed", at, id, key, nil)),
 		mustAuthEvent(NewPasswordResetRequestedEvent(reset, "alice@example.com", "secret-token", at.Add(time.Hour), id, key, nil)),
 		mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), at, id, hash, nil)),
-		mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), at, reset, id, hash, nil)),
+		mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), at, id, hash, nil)),
 	}
 	events := make([]eventstore.ResolvedEvent, len(facts))
 	for i, fact := range facts {
@@ -194,7 +194,7 @@ func TestAuthUnknownPositionIsExplicit(t *testing.T) {
 func TestAuthSubscriptionIncludesInjectedProfileTypes(t *testing.T) {
 	source := ProfileSource{EventTypes: []string{"ProfileImageUploaded", "ProfileBioUpdated", "ProfileHeaderImageUploaded"}}
 	query := authUserProjectionEventHandlerQuery(source)
-	if len(query.Criteria) != 8 {
+	if len(query.Criteria) != 7 {
 		t.Fatal("merged subscription missing event types")
 	}
 	for _, criterion := range query.Criteria {

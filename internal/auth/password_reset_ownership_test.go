@@ -50,7 +50,7 @@ func TestResetPasswordBindsRequestAndCompletionOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			requested := mustAuthEvent(NewPasswordResetRequestedEvent(request, "reset@example.com", "token", time.Now().Add(time.Hour), owner, key, nil))
-			facts := []eventstore.DomainEvent{requested}
+			facts := []eventstore.DomainEvent{registeredAuthEvent(t, owner), requested}
 			verification := PasswordResetVerification{ID: request, UserID: owner}
 			user := views.User{ID: owner, UserRegisteredID: owner}
 			reject := false
@@ -70,12 +70,13 @@ func TestResetPasswordBindsRequestAndCompletionOwner(t *testing.T) {
 				if scenario == "foreign completion owner" {
 					completedOwner = foreign
 				}
-				facts = append(facts, mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), time.Now(), request, completedOwner, testAuthHash(t), nil)))
+				authorizationID, operationID := uuidv7.NewString(), uuidv7.NewString()
+				facts = append(facts, mustAuthEvent(NewPasswordResetAuthorizedEvent(authorizationID, operationID, request, owner, testAuthHash(t), time.Now(), nil)), mustAuthEvent(NewPasswordResetCompletedEvent(uuidv7.NewString(), time.Now(), request, completedOwner, authorizationID, operationID, nil)))
 				reject = true
 			}
 			store := eventstoretest.New(t, facts...)
-			before := len(resetOutcomeFacts(t, store, PasswordResetCompleted))
-			err = ResetPasswordCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{verification}, resetCandidateUser{user: user}, store, store)
+			before := len(resetOutcomeFacts(t, store, PasswordResetAuthorized))
+			_, err = AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{verification}, resetCandidateUser{user: user}, store, store)
 			if reject && err == nil {
 				t.Fatal("invalid reset authority accepted")
 			}
@@ -85,7 +86,7 @@ func TestResetPasswordBindsRequestAndCompletionOwner(t *testing.T) {
 			if scenario == "foreign completion owner" && err != nil && !strings.Contains(err.Error(), "scope does not match") {
 				t.Fatalf("completion ancestry not checked: %v", err)
 			}
-			after := resetOutcomeFacts(t, store, PasswordResetCompleted)
+			after := resetOutcomeFacts(t, store, PasswordResetAuthorized)
 			expected := before
 			if !reject {
 				expected++
@@ -94,7 +95,7 @@ func TestResetPasswordBindsRequestAndCompletionOwner(t *testing.T) {
 				t.Fatal("rejected reset appended a completion")
 			}
 			if !reject {
-				completed, err := DecodePasswordResetCompletedEvent(after[0].Event)
+				completed, err := DecodePasswordResetAuthorizedEvent(after[0].Event)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -159,7 +160,7 @@ func TestResetPasswordConcurrentCompletionIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := eventstoretest.New(t, mustAuthEvent(NewPasswordResetRequestedEvent(request, "reset@example.com", "token", time.Now().Add(time.Hour), owner, key, nil)))
+	store := eventstoretest.New(t, registeredAuthEvent(t, owner), mustAuthEvent(NewPasswordResetRequestedEvent(request, "reset@example.com", "token", time.Now().Add(time.Hour), owner, key, nil)))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	ready := make(chan struct{}, 2)
@@ -172,6 +173,9 @@ func TestResetPasswordConcurrentCompletionIsAtomic(t *testing.T) {
 		if err != nil {
 			return latest, err
 		}
+		if !hasResetRequestCriterion(criteria) {
+			return latest, nil
+		}
 		ready <- struct{}{}
 		select {
 		case <-release:
@@ -183,7 +187,8 @@ func TestResetPasswordConcurrentCompletionIsAtomic(t *testing.T) {
 	results := make(chan error, 2)
 	for range 2 {
 		go func() {
-			results <- ResetPasswordCommandHandler(ctx, ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, resetCandidateUser{user: views.User{ID: owner, UserRegisteredID: owner}}, store, retriever)
+			_, err := AuthorizePasswordResetCommandHandler(ctx, ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, resetCandidateUser{user: views.User{ID: owner, UserRegisteredID: owner}}, store, retriever)
+			results <- err
 		}()
 	}
 	for range 2 {
@@ -209,7 +214,18 @@ func TestResetPasswordConcurrentCompletionIsAtomic(t *testing.T) {
 			t.Fatal("commands did not finish")
 		}
 	}
-	if successes != 1 || conflicts != 1 || len(resetOutcomeFacts(t, store, PasswordResetCompleted)) != 1 {
+	if successes != 1 || conflicts != 1 || len(resetOutcomeFacts(t, store, PasswordResetAuthorized)) != 1 {
 		t.Fatal("concurrent reset appended more than one completion")
 	}
+}
+
+func hasResetRequestCriterion(criteria []eventstore.Criterion) bool {
+	for _, c := range criteria {
+		for _, tag := range c.Tags {
+			if tag.Key == eventstore.EventTypeField && tag.Value == PasswordResetRequested {
+				return true
+			}
+		}
+	}
+	return false
 }

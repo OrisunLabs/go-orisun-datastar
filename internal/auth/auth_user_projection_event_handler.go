@@ -59,7 +59,6 @@ func authUserProjectionEventHandlerQuery(source ProfileSource) eventstore.Query 
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserNameChanged}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetRequested}}},
-		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetCompleted}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordChanged}}},
 	}}
 	for _, kind := range source.EventTypes {

@@ -132,9 +132,9 @@ func (s Server) updateName(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	_, err := auth.UpdateUserNameCommandHandler(r.Context(), auth.UpdateUserNameCommand{
-		User:     user,
-		Name:     r.FormValue("name"),
-		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+		UserRegisteredID: user.UserRegisteredID,
+		Name:             r.FormValue("name"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
 	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {

@@ -14,21 +14,21 @@ import (
 func TestDeletionRequestValidatesCompletionAncestry(t *testing.T) {
 	for _, scenario := range []string{"new request", "pending request", "matching completion", "different request", "different auth user", "completion without request"} {
 		t.Run(scenario, func(t *testing.T) {
-			owner, foreign, request := uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString()
+			owner, foreign, request, operation := uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString(), uuidv7.NewString()
 			facts := []eventstore.DomainEvent{registeredAuthEvent(t, owner)}
 			reject := scenario == "different request" || scenario == "different auth user" || scenario == "completion without request"
 			if scenario != "new request" && scenario != "completion without request" {
-				facts = append(facts, mustAuthEvent(NewAccountDeletionRequestedEvent(request, time.Now(), owner, owner, nil)))
+				facts = append(facts, mustAuthEvent(NewAccountDeletionRequestedEvent(request, time.Now(), owner, owner, operation, nil)))
 			}
 			if scenario != "new request" && scenario != "pending request" {
-				completedRequest, authID := request, owner
+				completedOperation, authID := operation, owner
 				if scenario == "different request" {
-					completedRequest = uuidv7.NewString()
+					completedOperation = uuidv7.NewString()
 				}
 				if scenario == "different auth user" {
 					authID = foreign
 				}
-				facts = append(facts, mustAuthEvent(NewAccountDeletedEvent(uuidv7.NewString(), time.Now(), completedRequest, authID, owner, nil)))
+				facts = append(facts, mustAuthEvent(NewAccountDeletedEvent(completedOperation, time.Now(), authID, owner, nil)))
 			}
 			store := eventstoretest.New(t, facts...)
 			user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
