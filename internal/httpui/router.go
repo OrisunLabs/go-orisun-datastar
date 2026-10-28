@@ -37,10 +37,6 @@ type SessionManager interface {
 	SessionCookieName() string
 }
 
-type AuthUserReader interface {
-	UserByIDOrRegisteredID(ctx context.Context, id string) (views.User, error)
-}
-
 type ProfileReader interface {
 	User(ctx context.Context, userRegisteredID string) (views.User, error)
 }
@@ -50,20 +46,20 @@ type VerificationStore interface {
 }
 
 type Server struct {
-	Sessions            SessionManager
-	AuthUsers           AuthUserReader
-	PIIKeys             auth.SubjectPiiKeyPort
-	PasswordCredentials auth.PasswordCredentialReader
-	Verifications       VerificationStore
-	Todos               todo.TodoReadModelReader
-	Profiles            ProfileReader
-	EventSaver          eventstore.Saver
-	EventRetriever      eventstore.Retriever
-	ProfileStorage      profile.ObjectStore
-	Subscriber          MessageSubscriber
-	ViewStore           viewstore.Store
-	Development         bool
-	Logger              *slog.Logger
+	RegistrationReadiness  RegistrationReadinessReader
+	PasswordResetReadiness PasswordResetReadinessReader
+	Sessions               SessionManager
+	PIIKeys                auth.SubjectPiiKeyPort
+	Verifications          VerificationStore
+	Todos                  todo.TodoReadModelReader
+	Profiles               ProfileReader
+	EventSaver             eventstore.SaverV2
+	EventRetriever         eventstore.Retriever
+	ProfileStorage         profile.ObjectStore
+	Subscriber             MessageSubscriber
+	ViewStore              viewstore.Store
+	Development            bool
+	Logger                 *slog.Logger
 }
 
 func (s Server) Routes() http.Handler {
@@ -123,7 +119,7 @@ func (s Server) requireVerifiedEmail(next http.Handler) http.Handler {
 			return
 		}
 		if !user.EmailVerified {
-			http.Redirect(w, r, "/register/"+user.ID+"/validate-email", http.StatusFound)
+			http.Error(w, "verified account required", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, user)))

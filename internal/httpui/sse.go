@@ -57,6 +57,9 @@ type viewStoreFatMorphConfig[T any] struct {
 }
 
 func streamViewStoreFatMorph[T any](ctx context.Context, sse *datastar.ServerSentEventGenerator, config viewStoreFatMorphConfig[T]) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	updates := make(chan struct{}, 1)
 	if err := config.Refresh(ctx); err != nil {
 		return err
@@ -66,14 +69,14 @@ func streamViewStoreFatMorph[T any](ctx context.Context, sse *datastar.ServerSen
 	if err != nil {
 		return err
 	}
-	defer watcher.Stop()
+	defer func() { cancel(); _ = watcher.Stop() }()
 
 	if config.Subscribe != nil {
 		subscription, err := config.Subscribe(ctx, func() { notifyOnce(updates) })
 		if err != nil {
 			return err
 		}
-		defer subscription.Close()
+		defer func() { cancel(); _ = subscription.Close() }()
 	}
 
 	notifyOnce(updates)

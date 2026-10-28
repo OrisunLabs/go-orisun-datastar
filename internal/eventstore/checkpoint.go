@@ -2,43 +2,37 @@ package eventstore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"zombiezen.com/go/sqlite"
 )
 
 type SQLiteCheckpointer struct {
-	db *appdb.DB
+	queries *dbsql.Queries
 }
 
-func NewSQLiteCheckpointer(db *appdb.DB) *SQLiteCheckpointer {
-	return &SQLiteCheckpointer{db: db}
+func NewSQLiteCheckpointer(db *sql.DB) *SQLiteCheckpointer {
+	return &SQLiteCheckpointer{queries: dbsql.New(db)}
 }
 
 func (c *SQLiteCheckpointer) GetCheckpoint(ctx context.Context, name string) (Position, bool, error) {
-	var row *dbsql.GetEventHandlerCheckpointRes
-	if err := c.db.ReadTX(ctx, func(conn *sqlite.Conn) error {
-		var err error
-		row, err = dbsql.OnceGetEventHandlerCheckpoint(conn, name)
-		return err
-	}); err != nil {
+	row, err := c.queries.GetEventHandlerCheckpoint(ctx, name)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return NoEventPosition, false, nil
+		}
 		return NoEventPosition, false, err
-	}
-	if row == nil {
-		return NoEventPosition, false, nil
 	}
 	return Position{Commit: row.CommitPosition, Prepare: row.PreparePosition}, true, nil
 }
 
 func (c *SQLiteCheckpointer) UpdateCheckpoint(ctx context.Context, name string, position Position) error {
-	return c.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertEventHandlerCheckpoint(conn, dbsql.UpsertEventHandlerCheckpointParams{
-			Id:              uuidv7.NewString(),
-			Name:            name,
-			CommitPosition:  position.Commit,
-			PreparePosition: position.Prepare,
-		})
+	return c.queries.UpsertEventHandlerCheckpoint(ctx, dbsql.UpsertEventHandlerCheckpointParams{
+		ID:              uuidv7.NewString(),
+		Name:            name,
+		CommitPosition:  position.Commit,
+		PreparePosition: position.Prepare,
 	})
 }

@@ -5,60 +5,31 @@ import (
 	"testing"
 )
 
-func TestWithScopeEventIDsStoresDeterministicMetadataWithoutChangingEventData(t *testing.T) {
-	t.Parallel()
-
-	target := DomainEvent{
-		EventID:   "target-id",
-		EventType: "TargetEvent",
-		Data:      map[string]any{"scope": map[string]any{"targetId": "target-id"}},
-		Metadata:  map[string]any{"source": "test", "scope_event_ids": []string{"untrusted-id"}},
-	}
-	later := ResolvedEvent{
-		Position: Position{Commit: 20, Prepare: 19},
-		Event: DomainEvent{
-			EventID: "later-id",
-			Data:    map[string]any{"scope": map[string]any{"targetId": "conflicting-id"}},
-		},
-	}
-	earlier := ResolvedEvent{
-		Position: Position{Commit: 10, Prepare: 9},
-		Event: DomainEvent{
-			EventID: "earlier-id",
-			Data:    map[string]any{"scope": map[string]any{"inheritedId": "not-copied"}},
-		},
-	}
-
-	result := withScopeEventIDs(target, []ResolvedEvent{later, earlier, earlier})
-
-	wantData := map[string]any{"scope": map[string]any{"targetId": "target-id"}}
-	if !reflect.DeepEqual(result.Data, wantData) {
-		t.Fatalf("event data changed: got %#v, want %#v", result.Data, wantData)
-	}
-	if !reflect.DeepEqual(target.Data, wantData) {
-		t.Fatalf("input event data changed: got %#v, want %#v", target.Data, wantData)
-	}
-	if got := target.Metadata["scope_event_ids"]; !reflect.DeepEqual(got, []string{"untrusted-id"}) {
-		t.Fatalf("input metadata changed: got %#v", got)
-	}
-	if got := result.Metadata["scope_event_ids"]; !reflect.DeepEqual(got, []string{"earlier-id", "later-id"}) {
-		t.Fatalf("scope event ids: got %#v", got)
-	}
-	if got := result.Metadata["source"]; got != "test" {
-		t.Fatalf("metadata source: got %#v", got)
+func TestEnvelopeSelectorsMappedAcrossReadAndWriteQueries(t *testing.T) {
+	query := Query{Criteria: []Criterion{{Tags: []Tag{
+		{Key: EventTypeField, Value: "Created"},
+		{Key: "eventId", Value: "id"},
+		{Key: "scopes.todoCreatedId", Value: "user"},
+	}}}}
+	want := []string{"__eventType", "__eventId", "scopes.todoCreatedId"}
+	for i, key := range want {
+		if got := toOrisunQuery(query).Criteria[0].Tags[i].Key; got != key {
+			t.Fatalf("write query selector: got %q, want %q", got, key)
+		}
+		if got := toOrisunReadCriteria(query.Criteria)[0].Tags[i].Key; got != key {
+			t.Fatalf("read selector: got %q, want %q", got, key)
+		}
+		if got := toOrisunCoreQuery(query).Criteria[0].Tags[i].Key; got != key {
+			t.Fatalf("subscription selector: got %q, want %q", got, key)
+		}
 	}
 }
 
-func TestWithScopeEventIDsStoresEmptyList(t *testing.T) {
-	t.Parallel()
-
-	result := withScopeEventIDs(DomainEvent{}, nil)
-
-	ids, ok := result.Metadata["scope_event_ids"].([]string)
-	if !ok {
-		t.Fatalf("scope event ids have type %T, want []string", result.Metadata["scope_event_ids"])
-	}
-	if len(ids) != 0 {
-		t.Fatalf("scope event ids: got %#v, want empty", ids)
+func TestLatestResultsDeduplicateOnlyFullStoredPosition(t *testing.T) {
+	first := ResolvedEvent{Position: Position{Commit: 1, Prepare: 1}, Event: DomainEvent{EventID: "same-id"}}
+	second := ResolvedEvent{Position: Position{Commit: 1, Prepare: 2}, Event: DomainEvent{EventID: "same-id"}}
+	got := EventsFromLatest([]LatestCriterionResult{{Event: &second}, {Event: &first}, {Event: &first}})
+	if !reflect.DeepEqual(got, []ResolvedEvent{first, second}) {
+		t.Fatalf("occurrences: %#v", got)
 	}
 }

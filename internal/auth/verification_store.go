@@ -2,57 +2,30 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"time"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
-	"zombiezen.com/go/sqlite"
 )
 
 type VerificationStore struct {
-	db *appdb.DB
+	queries *dbsql.Queries
 }
 
-func NewVerificationStore(db *appdb.DB) *VerificationStore {
-	return &VerificationStore{db: db}
-}
-
-func (s *VerificationStore) CreateEmailVerificationOTP(ctx context.Context, userRegisteredID, otpID, code string, expiresAt time.Time) error {
-	return s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceCreateAuthVerification(conn, dbsql.CreateAuthVerificationParams{
-			Id:         otpID,
-			Identifier: "email:" + userRegisteredID,
-			Value:      verificationValueHash("email-verification-otp", code),
-			ExpiresAt:  appdb.SQLTime(expiresAt),
-		})
-	})
-}
-
-func (s *VerificationStore) CreatePasswordReset(ctx context.Context, userRegisteredID, requestID, token string, expiresAt time.Time) error {
-	return s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceCreateAuthVerification(conn, dbsql.CreateAuthVerificationParams{
-			Id:         requestID,
-			Identifier: "password-reset:" + userRegisteredID,
-			Value:      verificationValueHash("password-reset-token", token),
-			ExpiresAt:  appdb.SQLTime(expiresAt),
-		})
-	})
+func NewVerificationStore(db *sql.DB) *VerificationStore {
+	return &VerificationStore{queries: dbsql.New(db)}
 }
 
 func (s *VerificationStore) PasswordResetByToken(ctx context.Context, token string) (PasswordResetVerification, error) {
-	var verification *dbsql.PasswordResetVerificationByTokenRes
-	if err := s.db.ReadTX(ctx, func(conn *sqlite.Conn) error {
-		var err error
-		verification, err = dbsql.OncePasswordResetVerificationByToken(conn, verificationValueHash("password-reset-token", token))
-		return err
-	}); err != nil || verification == nil {
+	verification, err := s.queries.PasswordResetVerificationByToken(ctx, verificationValueHash("password-reset-token", token))
+	if err != nil {
 		return PasswordResetVerification{}, errors.New("invalid or expired reset token")
 	}
 	return PasswordResetVerification{
-		ID:     verification.Id,
+		ID:     verification.ID,
 		UserID: strings.TrimPrefix(verification.Identifier, "password-reset:"),
 	}, nil
 }
@@ -64,4 +37,8 @@ func verificationValueHash(field, value string) string {
 type PasswordResetVerification struct {
 	ID     string
 	UserID string
+}
+
+func sqliteTime(value time.Time) sql.NullTime {
+	return sql.NullTime{Time: value, Valid: true}
 }

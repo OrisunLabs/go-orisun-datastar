@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -25,7 +26,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/storage"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/viewstore"
-	"zombiezen.com/go/sqlite"
 )
 
 type runOptions struct {
@@ -35,16 +35,19 @@ type runOptions struct {
 }
 
 type appComponents struct {
-	sessionManager   *auth.SessionManager
-	authUsers        *auth.AuthUserStore
-	verifications    *auth.VerificationStore
-	todoReadModel    *todo.ReadModel
-	profileReadModel *profile.ReadModel
-	checkpointer     eventstore.Checkpointer
-	emailSender      email.Sender
-	profileStorage   profile.ObjectStore
-	piiKeys          *auth.SubjectPiiKeyStore
-	accountDeletion  *auth.AccountDataDeletionStore
+	sessionManager    *auth.SessionManager
+	authUsers         *auth.AuthUserStore
+	authProjection    *auth.SQLiteProjectionRepository
+	verifications     *auth.VerificationStore
+	todoReadModel     *todo.ReadModel
+	todoProjection    *todo.SQLiteProjectionRepository
+	profileReadModel  *profile.ReadModel
+	profileProjection *profile.SQLiteProjectionRepository
+	checkpointer      eventstore.Checkpointer
+	emailSender       email.Sender
+	profileStorage    profile.ObjectStore
+	piiKeys           *auth.SubjectPiiKeyStore
+	accountDeletion   *auth.AccountDataDeletionStore
 }
 
 type eventHandler interface {
@@ -82,10 +85,13 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 	if err != nil {
 		return fmt.Errorf("open sqlite: %w", err)
 	}
-	defer closeDB(db, logger)
+	defer db.Close()
 
+	if err := appdb.Migrate(ctx, db); err != nil {
+		return fmt.Errorf("migrate sqlite: %w", err)
+	}
 	if opts.migrateOnly {
-		logger.Info("sqlite migrations complete", "path", cfg.SQLitePath)
+		logger.Info("sqlite migrations complete")
 		return nil
 	}
 	if opts.seedOnly {
@@ -96,7 +102,7 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 		if err := resetReadModels(ctx, db); err != nil {
 			return fmt.Errorf("reset read models: %w", err)
 		}
-		logger.Info("read models and event-handler checkpoints reset", "path", cfg.SQLitePath)
+		logger.Info("read models and event-handler checkpoints reset", "database", cfg.SQLitePath)
 		return nil
 	}
 
@@ -121,52 +127,54 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 	defer stopEventHandlers(handlers)
 
 	app := httpui.Server{
-		Sessions:            components.sessionManager,
-		AuthUsers:           components.authUsers,
-		PIIKeys:             components.piiKeys,
-		PasswordCredentials: components.authUsers,
-		Verifications:       components.verifications,
-		Todos:               components.todoReadModel,
-		Profiles:            components.profileReadModel,
-		EventSaver:          orisunStore,
-		EventRetriever:      orisunStore,
-		ProfileStorage:      components.profileStorage,
-		Subscriber:          bus,
-		ViewStore:           viewStore,
-		Development:         cfg.DevelopmentCookie,
-		Logger:              logger,
+		Sessions:               components.sessionManager,
+		RegistrationReadiness:  components.authUsers,
+		PasswordResetReadiness: components.authUsers,
+		PIIKeys:                components.piiKeys,
+		Verifications:          components.verifications,
+		Todos:                  components.todoReadModel,
+		Profiles:               components.profileReadModel,
+		EventSaver:             orisunStore,
+		EventRetriever:         orisunStore,
+		ProfileStorage:         components.profileStorage,
+		Subscriber:             bus,
+		ViewStore:              viewStore,
+		Development:            cfg.DevelopmentCookie,
+		Logger:                 logger,
 	}
 	return serveHTTP(ctx, stop, cfg.Port, app.Routes(), logger)
 }
 
-func closeDB(db *appdb.DB, logger *slog.Logger) {
-	if err := db.Close(); err != nil {
-		logger.Error("close sqlite", "err", err)
+func resetReadModels(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-}
+	defer tx.Rollback()
 
-func resetReadModels(ctx context.Context, db *appdb.DB) error {
-	return db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		if err := dbsql.OnceResetReadModelAuthSessions(conn); err != nil {
-			return err
-		}
-		if err := dbsql.OnceResetReadModelAuthAccounts(conn); err != nil {
-			return err
-		}
-		if err := dbsql.OnceResetReadModelAuthVerifications(conn); err != nil {
-			return err
-		}
-		if err := dbsql.OnceResetReadModelProfiles(conn); err != nil {
-			return err
-		}
-		if err := dbsql.OnceResetReadModelTodos(conn); err != nil {
-			return err
-		}
-		if err := dbsql.OnceResetReadModelAuthUsers(conn); err != nil {
-			return err
-		}
-		return dbsql.OnceResetEventHandlerCheckpoints(conn)
-	})
+	queries := dbsql.New(tx)
+	if err := queries.ResetReadModelAuthSessions(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetReadModelAuthAccounts(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetReadModelAuthVerifications(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetReadModelProfiles(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetReadModelTodos(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetReadModelAuthUsers(ctx); err != nil {
+		return err
+	}
+	if err := queries.ResetEventHandlerCheckpoints(ctx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func startEventStore(ctx context.Context, cfg config.Config) (*eventstore.EmbeddedOrisun, error) {
@@ -195,7 +203,7 @@ func newViewStore(bus *natsbus.Bus, logger *slog.Logger) viewstore.Store {
 	return store
 }
 
-func newAppComponents(db *appdb.DB, store *eventstore.EmbeddedOrisun, cfg config.Config, logger *slog.Logger) appComponents {
+func newAppComponents(db *sql.DB, store *eventstore.EmbeddedOrisun, cfg config.Config, logger *slog.Logger) appComponents {
 	authUsers := auth.NewAuthUserStore(db)
 	sessionManager := auth.NewSessionManager(db, authUsers, !cfg.DevelopmentCookie)
 	verifications := auth.NewVerificationStore(db)
@@ -206,16 +214,19 @@ func newAppComponents(db *appdb.DB, store *eventstore.EmbeddedOrisun, cfg config
 	accountDeletion := auth.NewAccountDataDeletionStore(db, profileStorage)
 
 	return appComponents{
-		sessionManager:   sessionManager,
-		authUsers:        authUsers,
-		verifications:    verifications,
-		todoReadModel:    todoReadModel,
-		profileReadModel: profileReadModel,
-		checkpointer:     eventstore.NewSQLiteCheckpointer(db),
-		emailSender:      email.LogSender{Logger: logger},
-		profileStorage:   profileStorage,
-		piiKeys:          piiKeys,
-		accountDeletion:  accountDeletion,
+		sessionManager:    sessionManager,
+		authUsers:         authUsers,
+		authProjection:    auth.NewSQLiteProjectionRepository(db),
+		verifications:     verifications,
+		todoReadModel:     todoReadModel,
+		todoProjection:    todo.NewSQLiteProjectionRepository(db),
+		profileReadModel:  profileReadModel,
+		profileProjection: profile.NewSQLiteProjectionRepository(db),
+		checkpointer:      eventstore.NewSQLiteCheckpointer(db),
+		emailSender:       email.LogSender{Logger: logger},
+		profileStorage:    profileStorage,
+		piiKeys:           piiKeys,
+		accountDeletion:   accountDeletion,
 	}
 }
 
@@ -225,6 +236,24 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 			name: "registration OTP",
 			create: func() (eventHandler, error) {
 				return auth.NewRegistrationOTPToBeGeneratedEventHandler(store, components.checkpointer, store, store, logger)
+			},
+		},
+		{name: "registration execution", create: func() (eventHandler, error) {
+			return auth.NewRegistrationExecutionEventHandler(store, components.checkpointer, store, store, components.piiKeys, logger)
+		}},
+		{name: "password reset execution", create: func() (eventHandler, error) {
+			return auth.NewPasswordResetExecutionEventHandler(store, components.checkpointer, store, store, logger)
+		}},
+		{
+			name: "password reset completion",
+			create: func() (eventHandler, error) {
+				return auth.NewPasswordResetCompletionEventHandler(store, components.checkpointer, store, store, logger)
+			},
+		},
+		{
+			name: "registration completion",
+			create: func() (eventHandler, error) {
+				return auth.NewRegistrationCompletionEventHandler(store, components.checkpointer, store, store, logger)
 			},
 		},
 		{
@@ -242,9 +271,13 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "auth user projection",
 			create: func() (eventHandler, error) {
-				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, store, components.authUsers, components.verifications, components.piiKeys, logger)
+				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authProjection, components.piiKeys, authProfileSource(), authUserInvalidator{publisher: bus}, logger)
 			},
 		},
+		{name: "account deletion completion", create: func() (eventHandler, error) {
+			return auth.NewAccountDeletionCompletionEventHandler(store, components.checkpointer, store, store, logger)
+		}},
+
 		{
 			name: "account deletion",
 			create: func() (eventHandler, error) {
@@ -254,19 +287,13 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 		{
 			name: "profile read model",
 			create: func() (eventHandler, error) {
-				return profile.NewReadModelEventHandler(store, components.checkpointer, components.profileReadModel, bus, components.piiKeys, logger)
-			},
-		},
-		{
-			name: "profile image auth user bridge",
-			create: func() (eventHandler, error) {
-				return profile.NewProfileImageUploadedAuthUserEventHandler(store, components.checkpointer, components.authUsers, bus, logger)
+				return profile.NewReadModelEventHandler(store, components.checkpointer, components.profileProjection, bus, components.piiKeys, logger)
 			},
 		},
 		{
 			name: "todo read model",
 			create: func() (eventHandler, error) {
-				return todo.NewTodoReadModelEventHandler(store, components.checkpointer, components.todoReadModel, bus, logger)
+				return todo.NewTodoReadModelEventHandler(store, components.checkpointer, components.todoProjection, bus, logger)
 			},
 		},
 	}

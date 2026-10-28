@@ -1,7 +1,6 @@
 package httpui
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -14,6 +13,8 @@ import (
 )
 
 func (s Server) authRoutes(r chi.Router) {
+	r.With(noCache).Get("/account-deletion/{requestID}/processing", s.accountDeletionProcessingPage)
+	r.With(noCache).Get("/account-deletion/{requestID}/stream", s.accountDeletionProgressStream)
 	r.With(noCache).Get("/register", render(views.Register(nil)))
 	r.With(noCache, signupRateLimit).Post("/register", s.register)
 	r.With(noCache).Get("/login", render(views.Login(nil)))
@@ -24,12 +25,16 @@ func (s Server) authRoutes(r chi.Router) {
 	r.With(noCache).Get("/reset-password/{token}", func(w http.ResponseWriter, r *http.Request) {
 		_ = views.ResetPassword(chi.URLParam(r, "token"), nil).Render(r.Context(), w)
 	})
+	r.With(noCache).Get("/password-reset/{authorizationID}/processing", s.passwordResetProcessingPage)
+	r.With(noCache).Get("/password-reset/{authorizationID}/stream", s.passwordResetProgressStream)
 	r.With(noCache, resetPasswordRateLimit).Post("/reset-password/{token}", s.resetPassword)
-	r.With(noCache).Get("/register/{userID}/validate-email", func(w http.ResponseWriter, r *http.Request) {
-		_ = views.ValidateEmail(chi.URLParam(r, "userID"), nil).Render(r.Context(), w)
+	r.With(noCache).Get("/register/{registrationID}/processing", s.registrationProcessingPage)
+	r.With(noCache).Get("/register/{registrationID}/stream", s.registrationProgressStream)
+	r.With(noCache).Get("/register/{registrationID}/validate-email", func(w http.ResponseWriter, r *http.Request) {
+		_ = views.ValidateEmail(chi.URLParam(r, "registrationID"), nil).Render(r.Context(), w)
 	})
-	r.With(noCache, otpValidateRateLimit).Post("/register/{userID}/validate-email", s.validateEmail)
-	r.With(noCache, otpResendRateLimit).Post("/register/{userID}/send-email-validation-otp", s.sendOTP)
+	r.With(noCache, otpValidateRateLimit).Post("/register/{registrationID}/validate-email", s.validateEmail)
+	r.With(noCache, otpResendRateLimit).Post("/register/{registrationID}/send-email-validation-otp", s.sendOTP)
 }
 
 func (s Server) register(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +44,7 @@ func (s Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	year, _ := strconv.Atoi(r.FormValue("yearOfBirth"))
-	registered, err := auth.RegisterUserCommandHandler(r.Context(), auth.RegisterUserCommand{
+	registration, err := auth.StartUserRegistrationCommandHandler(r.Context(), auth.StartUserRegistrationCommand{
 		Username: r.FormValue("username"), Email: r.FormValue("email"), Password: r.FormValue("password"),
 		FirstName: r.FormValue("firstName"), LastName: r.FormValue("lastName"), YearOfBirth: year,
 		Metadata: eventstore.HTTPCommandMetadata(r, ""),
@@ -49,7 +54,7 @@ func (s Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
-		return sse.Redirect("/register/" + registered.UserRegisteredID + "/validate-email")
+		return sse.Redirect("/register/" + registration.UserRegistrationStartedID + "/validate-email")
 	})
 }
 
@@ -76,11 +81,7 @@ func (s Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Sessions.SetSessionCookie(w, token)
-	path := "/todos"
-	if !user.EmailVerified {
-		path = "/register/" + user.ID + "/validate-email"
-	}
-	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect(path) })
+	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/todos") })
 }
 
 func (s Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +99,7 @@ func (s Server) forgotPassword(w http.ResponseWriter, r *http.Request) {
 	_, _ = auth.RequestPasswordResetCommandHandler(r.Context(), auth.RequestPasswordResetCommand{
 		EmailAddress: r.FormValue("email"),
 		Metadata:     eventstore.HTTPCommandMetadata(r, ""),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever, s.PIIKeys)
+	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
 	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
 }
 
@@ -106,49 +107,45 @@ func (s Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "auth.reset_password", nil)
 	_ = r.ParseForm()
 	token := chi.URLParam(r, "token")
-	if err := auth.ResetPasswordCommandHandler(r.Context(), auth.ResetPasswordCommand{
+	authorizationID, err := auth.AuthorizePasswordResetCommandHandler(r.Context(), auth.ResetPasswordCommand{
 		Token:    token,
 		Password: r.FormValue("password"),
 		Metadata: eventstore.HTTPCommandMetadata(r, ""),
-	}, s.Verifications, s.AuthUsers, s.EventSaver, s.EventRetriever); err != nil {
+	}, s.Verifications, s.EventSaver, s.EventRetriever)
+	if err != nil {
 		patchTempl(w, r, views.ResetPasswordForm(token, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}
-	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
+	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
+		return sse.Redirect("/password-reset/" + authorizationID + "/processing")
+	})
 }
 
 func (s Server) validateEmail(w http.ResponseWriter, r *http.Request) {
-	setRequestAction(r, "auth.validate_email", map[string]any{"userId": chi.URLParam(r, "userID")})
+	setRequestAction(r, "auth.validate_email", map[string]any{"registrationId": chi.URLParam(r, "registrationID")})
 	_ = r.ParseForm()
-	userID := chi.URLParam(r, "userID")
-	if err := auth.ValidateEmailVerificationOTPForUserCommandHandler(r.Context(), userID, r.FormValue("otp"), eventstore.HTTPCommandMetadata(r, ""), s.AuthUsers, s.EventSaver, s.EventRetriever); err != nil {
-		patchTempl(w, r, views.ValidateEmailForm(userID, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
+	registrationID := chi.URLParam(r, "registrationID")
+	metadata := eventstore.HTTPCommandMetadata(r, "")
+	err := auth.ValidateEmailVerificationOTPCommandHandler(r.Context(), auth.ValidateEmailVerificationOTPCommand{UserRegistrationStartedID: registrationID, Code: r.FormValue("otp"), Metadata: metadata}, s.EventSaver, s.EventRetriever)
+	if err != nil {
+		patchTempl(w, r, views.ValidateEmailForm(registrationID, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}
-	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
+
+	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
+		return sse.Redirect("/register/" + registrationID + "/processing")
+	})
 }
 
 func (s Server) sendOTP(w http.ResponseWriter, r *http.Request) {
-	setRequestAction(r, "auth.send_email_validation_otp", map[string]any{"userId": chi.URLParam(r, "userID")})
-	userID := chi.URLParam(r, "userID")
-	user, err := s.AuthUsers.UserByIDOrRegisteredID(r.Context(), userID)
-	if err == nil {
-		_, _ = auth.GenerateEmailVerificationOTPCommandHandler(
-			r.Context(),
-			auth.GenerateEmailVerificationOTPCommand{
-				User:     user,
-				Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
-			},
-			s.EventSaver,
-			s.EventRetriever,
-		)
-	} else {
-		writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
-			return sse.ConsoleError(fmt.Errorf("OTP validation failed with err %v", err.Error()))
-		})
+	setRequestAction(r, "auth.send_email_validation_otp", map[string]any{"registrationId": chi.URLParam(r, "registrationID")})
+	registrationID := chi.URLParam(r, "registrationID")
+	_, err := auth.GenerateEmailVerificationOTPCommandHandler(r.Context(), auth.GenerateEmailVerificationOTPCommand{UserRegistrationStartedID: registrationID, Metadata: eventstore.HTTPCommandMetadata(r, "")}, s.EventSaver, s.EventRetriever)
+	if err != nil {
+		patchTempl(w, r, views.ValidateEmailForm(registrationID, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}
 	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
-		return sse.Redirect("/register/" + userID + "/validate-email")
+		return sse.Redirect("/register/" + registrationID + "/validate-email")
 	})
 }

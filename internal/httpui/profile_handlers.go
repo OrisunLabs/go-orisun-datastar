@@ -2,6 +2,7 @@ package httpui
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/starfederation/datastar-go/datastar"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/features/profile"
@@ -86,7 +86,7 @@ func (s Server) updateBio(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	err := profile.UpdateProfileBioCommandHandler(r.Context(), profile.UpdateProfileBioCommand{
-		User:     user,
+		UserID:   user.UserRegisteredID,
 		Bio:      r.FormValue("bio"),
 		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
 	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
@@ -115,7 +115,7 @@ func (s Server) uploadImage(w http.ResponseWriter, r *http.Request, header bool)
 		return
 	}
 	if _, err := profile.UploadProfileImageCommandHandler(r.Context(), profile.UploadProfileImageCommand{
-		User:        user,
+		UserID:      user.UserRegisteredID,
 		Data:        data,
 		ContentType: contentType,
 		Header:      header,
@@ -132,9 +132,9 @@ func (s Server) updateName(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	_, err := auth.UpdateUserNameCommandHandler(r.Context(), auth.UpdateUserNameCommand{
-		User:     user,
-		Name:     r.FormValue("name"),
-		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+		UserRegisteredID: user.UserRegisteredID,
+		Name:             r.FormValue("name"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
 	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {
@@ -149,11 +149,11 @@ func (s Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	err := auth.ChangePasswordCommandHandler(r.Context(), auth.ChangePasswordCommand{
-		User:            user,
-		CurrentPassword: r.FormValue("currentPassword"),
-		NewPassword:     r.FormValue("newPassword"),
-		Metadata:        eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever)
+		UserRegisteredID: user.UserRegisteredID,
+		CurrentPassword:  r.FormValue("currentPassword"),
+		NewPassword:      r.FormValue("newPassword"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+	}, s.EventSaver, s.EventRetriever)
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {
 			return alert(sse, err.Error())
@@ -166,17 +166,20 @@ func (s Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "settings.delete_account", nil)
 	_ = r.ParseForm()
 	user := currentUser(r)
-	_, err := auth.RequestAccountDeletionCommandHandler(r.Context(), auth.RequestAccountDeletionCommand{
-		User:     user,
-		Password: r.FormValue("password"),
-		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever)
+	requestID, err := auth.RequestAccountDeletionCommandHandler(r.Context(), auth.RequestAccountDeletionCommand{
+		UserRegisteredID: user.UserRegisteredID,
+		AuthUserID:       user.ID,
+		Password:         r.FormValue("password"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+	}, s.EventSaver, s.EventRetriever)
+	if err == nil {
+		s.Sessions.ClearSessionCookie(w)
+	}
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {
 			return alert(sse, err.Error())
 		}
-		s.Sessions.ClearSessionCookie(w)
-		return sse.Redirect("/login")
+		return sse.Redirect("/account-deletion/" + requestID + "/processing")
 	})
 }
 
@@ -191,7 +194,7 @@ func (s Server) refreshProfileViewState(ctx context.Context, key string, current
 func (s Server) profileUser(ctx context.Context, current views.User) (views.User, error) {
 	user, err := s.Profiles.User(ctx, current.UserRegisteredID)
 	if err != nil {
-		if errors.Is(err, appdb.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return current, nil
 		}
 		return views.User{}, err

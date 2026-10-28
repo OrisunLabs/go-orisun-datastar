@@ -58,8 +58,7 @@ tasks:
     generates:
       - internal/dbsql/**/*.go
     cmds:
-      - GOBIN="{{.ROOT_DIR}}/.bin" go install github.com/delaneyj/toolbelt/sqlc-gen-zombiezen
-      - PATH="{{.ROOT_DIR}}/.bin:$PATH" go tool sqlc generate
+      - go tool sqlc generate
 
   css:
     sources:

@@ -17,12 +17,12 @@ func (s *EmbeddedOrisun) EnsureBoundaryIndexes(ctx context.Context, definitions 
 	for _, definition := range definitions {
 		fields := make([]orisunapi.BoundaryIndexField, 0, len(definition.Fields))
 		for _, field := range definition.Fields {
-			fields = append(fields, orisunapi.BoundaryIndexField{JsonKey: field, ValueType: "text"})
+			fields = append(fields, orisunapi.BoundaryIndexField{JsonKey: toOrisunQueryKey(field), ValueType: "text"})
 		}
 
 		conditions := make([]orisunapi.BoundaryIndexCondition, 0, len(definition.EventTypes))
 		for _, eventType := range definition.EventTypes {
-			conditions = append(conditions, orisunapi.BoundaryIndexCondition{Key: "eventType", Operator: "=", Value: eventType})
+			conditions = append(conditions, orisunapi.BoundaryIndexCondition{Key: toOrisunQueryKey(EventTypeField), Operator: "=", Value: eventType})
 		}
 
 		combinator := orisunapi.IndexCombinatorAND

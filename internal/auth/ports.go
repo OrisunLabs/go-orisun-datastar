@@ -9,3 +9,11 @@ import (
 type EmailSender interface {
 	Send(ctx context.Context, message email.Message) error
 }
+
+type AccountDataDeletionPort interface {
+	DeleteAccountData(ctx context.Context, userRegisteredID string) error
+}
+
+type AccountPiiKeyPort interface {
+	DestroySubjectKey(ctx context.Context, userRegisteredID string) error
+}

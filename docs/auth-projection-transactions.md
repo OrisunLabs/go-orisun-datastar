@@ -1,0 +1,13 @@
+# Auth projection transactions
+
+`internal/auth/project.go` owns ordered auth/profile interpretation. The SQLite repository binds sqlc queries to a live owner transaction; unbound, foreign, nested and expired contexts fail. `BEGIN IMMEDIATE` acquires SQLite's writer lock before any authority read. WAL permits independent readers, while the serial event subscription owns source order between batches.
+
+For each occurrence, replay lookup precedes strict decoding and key access. New facts load current state, fold the owning fields, and persist state, credentials, verification inputs, the existing full-position watermark and occurrence evidence before advancing. All changes roll back together; invalidation publishes only after commit. Replay can retry notification without decrypting historical events or recreating credentials/tokens.
+
+Only accepted `UserRegistered` creates login state. Its verification timestamp/flag must agree. Pending registration and OTP facts never create credentials. Only `PasswordChanged` changes a password; reset authorization/completion are independent workflow facts. Token discovery reads only verification rows; commands derive authority from events. Auth owns its image/bio/header fields and never joins the profile projection.
+
+The fresh-install schema is `migrations/001_init.sql`. JSON receipts contain only event types and full positions. SQLite `json_patch` merges evidence; `json_type` checks exact position membership. Active/erased membership scans are unindexed; marker lookup/update uses its primary key. SQLite has no GIN index. There are no additional source-position columns or receipt-only tables.
+
+Cleanup uses the same immediate writer transaction to transfer auth occurrence evidence into `auth_erased_users` and remove account data atomically before key destruction. Projection writes reject erased users; unseen marked occurrences validate contracts then retain only evidence without accessing keys or recreating credentials. Active users with missing keys still fail. Profile and todo retain their separate current projection policies.
+
+`task test` runs native checks automatically against private SQLite files, without environment flags or external services. Coverage includes partition equivalence, historical/exact replay, real SQL rollback, same-transaction visibility, concurrent pool isolation, transaction lifetime, token/credential ownership, pending registration, authoritative password changes, erasure before projection, cleanup/receipt rollback, writer contention and notification retries. Composition tests remove the profile table and verify auth-owned profile reads. No application database is reset or seeded.

@@ -2,14 +2,14 @@
 
 Go-Orisun-Datastar is a Go starter for event-sourced, server-rendered web applications. It combines [Orisun](https://github.com/OrisunLabs/Orisun), chi, templ, Datastar, sqlc, Tailwind, and DaisyUI into a small application that is useful as a reference and as a starting point.
 
-The `sqlite` branch is local-first. SQLite stores auth/session tables and read models, embedded Orisun stores immutable domain events in SQLite, and the app borrows Orisun's embedded NATS/JetStream connection for event notifications and view-state updates. Email messages are logged, uploads are written to `static/uploads`, and no external email, object storage, or NATS service is required.
+The `sqlite` branch uses SQLite for auth/session tables and read models, embedded Orisun stores immutable domain events in SQLite, and the app borrows Orisun's embedded NATS/JetStream connection for event notifications and view-state updates. Email messages are logged, uploads are written to `static/uploads`, and no external email, object storage, or NATS service is required.
 
 ## Branches
 
 This repository keeps database-backed variants on separate branches:
 
-- `sqlite`: SQLite for app tables plus embedded Orisun SQLite. This is the easiest local development path.
-- `postgres`: PostgreSQL for app tables plus embedded Orisun Postgres. Use this when you want Postgres-backed app data and event storage.
+- `postgres`: PostgreSQL for app tables plus embedded Orisun Postgres. This is the Postgres-backed variant.
+- `sqlite`: SQLite for app tables plus embedded Orisun SQLite. Use this when you want the easiest local development path.
 
 If a branch is already checked out in a separate worktree, use that worktree path or remove it before switching branches in this checkout.
 
@@ -24,7 +24,7 @@ If a branch is already checked out in a separate worktree, use that worktree pat
 - Embedded Orisun NATS/JetStream reused directly by the app; no NATS URL is needed
 - CQRS-style read models and replayable event-handler slices
 - Command-handler slices for business writes
-- sqlc-generated SQLite access through the toolbelt zombiezen/sqlite generator
+- sqlc-generated `database/sql` access using the pure Go SQLite driver
 - UUIDv7 identifiers for generated IDs
 - Authentication, sessions, email verification, password reset, profile editing, and todos
 - Local logged email sender for development and demos
@@ -73,21 +73,21 @@ task build        # build ./cmd/server
 
 ## Configuration
 
-The app has useful defaults and can run without a `.env` file. Override these environment variables when needed:
+The app has useful defaults. Override these environment variables when needed:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3001` | HTTP server port |
 | `APP_URL` | `http://localhost:$PORT` | Base URL used in generated links |
-| `SQLITE_PATH` | `data/app.sqlite` | SQLite read-model/auth database path |
-| `ORISUN_SQLITE_DIR` | `data/orisun` | Embedded Orisun SQLite directory |
+| `SQLITE_PATH` | `data/appdb.sqlite` | Application SQLite database |
+| `ORISUN_SQLITE_DIR` | `data/app-orisun` | Embedded Orisun SQLite directory |
 | `ORISUN_GENERAL_BOUNDARY` | `go_orisun_datastar` | Orisun boundary name |
 | `UPLOAD_DIR` | `static/uploads` | Local upload destination |
 | `UPLOAD_BASE_URL` | `/static/uploads` | Public URL prefix for uploaded files |
 | `BETTER_AUTH_SECRET` | development secret | Session/auth secret |
 | `NODE_ENV` | `development` | Controls development cookie behavior and hot reload |
 
-The `postgres` branch replaces the SQLite-specific variables with `DATABASE_URL` or `POSTGRES_*` variables.
+The SQLite branch needs no external database. Application and event files are separate. Use a fresh database for this starter schema; existing event payloads are not rewritten or upgraded automatically.
 
 ## Architecture
 
@@ -109,7 +109,7 @@ Keep direct SQL writes limited to read models, auth/session tables, and event-ha
 
 Feature folders are organized around behavior:
 
-- command handlers live in their own files, such as `create_todo.go`, `rename_todo.go`, and `upload_profile_image.go`
+- command handlers live in their own files, such as `create_todos_command_handler.go`, `rename_todos_command_handler.go`, and `upload_profile_image_command_handler.go`
 - each command slice owns its load context instead of depending on a shared aggregate loader
 - event handlers live in their own files, such as `todo_read_model_event_handler.go`
 - read models own query/projection persistence
@@ -136,3 +136,13 @@ task sqlc
 task templ
 task css
 ```
+
+## Backend patterns
+
+Commands use narrow ports, bounded latest-event context reads and one `SaveCommandEventsV2` append preserving every independently checked query and position. Orisun owns persisted write contexts; domain ancestry is separate from consistency metadata. Stateful command tests use real in-memory Orisun SQLite through `internal/eventstoretest` through the same V2 Orisun adapter.
+
+See [backend architecture patterns and remaining conversions](docs/backend-patterns.md). Existing NATS KV view-state remains supported.
+
+Todo projection persistence uses a transaction-bound repository and an ordered state fold. See [todo projection transactions](docs/todo-projection-transactions.md), [auth projection transactions](docs/auth-projection-transactions.md), and [profile projection transactions](docs/profile-projection-transactions.md). Native projection checks run automatically with `task test` in isolated temporary SQLite files. No external database or `TEST_DATABASE_URL` is required.
+
+SQLite persistence and verification are described in [SQLite branch parity](docs/sqlite-parity.md).

@@ -2,11 +2,11 @@ package auth
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
-	"zombiezen.com/go/sqlite"
 )
 
 type SubjectPiiKeyPort interface {
@@ -16,12 +16,12 @@ type SubjectPiiKeyPort interface {
 }
 
 type SubjectPiiKeyStore struct {
-	db        *appdb.DB
+	queries   *dbsql.Queries
 	protector *protectedpii.Protector
 }
 
-func NewSubjectPiiKeyStore(db *appdb.DB, protector *protectedpii.Protector) *SubjectPiiKeyStore {
-	return &SubjectPiiKeyStore{db: db, protector: protector}
+func NewSubjectPiiKeyStore(db *sql.DB, protector *protectedpii.Protector) *SubjectPiiKeyStore {
+	return &SubjectPiiKeyStore{queries: dbsql.New(db), protector: protector}
 }
 
 func (s *SubjectPiiKeyStore) GetOrCreateSubjectDataKey(ctx context.Context, subjectID string) (protectedpii.SubjectDataKey, error) {
@@ -36,13 +36,11 @@ func (s *SubjectPiiKeyStore) GetOrCreateSubjectDataKey(ctx context.Context, subj
 	if err != nil {
 		return protectedpii.SubjectDataKey{}, err
 	}
-	if err := s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceCreateSubjectPiiKey(conn, dbsql.CreateSubjectPiiKeyParams{
-			SubjectId:        subjectID,
-			EncryptedDataKey: protected.Ciphertext,
-			EncryptionNonce:  protected.Nonce,
-			KeyVersion:       protected.KeyID,
-		})
+	if err := s.queries.CreateSubjectPiiKey(ctx, dbsql.CreateSubjectPiiKeyParams{
+		SubjectID:        subjectID,
+		EncryptedDataKey: protected.Ciphertext,
+		EncryptionNonce:  protected.Nonce,
+		KeyVersion:       protected.KeyID,
 	}); err != nil {
 		return protectedpii.SubjectDataKey{}, err
 	}
@@ -53,19 +51,12 @@ func (s *SubjectPiiKeyStore) GetOrCreateSubjectDataKey(ctx context.Context, subj
 }
 
 func (s *SubjectPiiKeyStore) GetSubjectDataKey(ctx context.Context, subjectID string) (protectedpii.SubjectDataKey, bool, error) {
-	var row *dbsql.SubjectPiiKeyRes
-	if err := s.db.ReadTX(ctx, func(conn *sqlite.Conn) error {
-		var err error
-		row, err = dbsql.OnceSubjectPiiKey(conn, subjectID)
-		if err == appdb.ErrNoRows {
-			return nil
-		}
-		return err
-	}); err != nil {
-		return protectedpii.SubjectDataKey{}, false, err
-	}
-	if row == nil {
+	row, err := s.queries.SubjectPiiKey(ctx, subjectID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return protectedpii.SubjectDataKey{}, false, nil
+	}
+	if err != nil {
+		return protectedpii.SubjectDataKey{}, false, err
 	}
 	key, err := s.protector.UnprotectSubjectDataKey(protectedpii.Value{
 		Version:    1,
@@ -80,7 +71,5 @@ func (s *SubjectPiiKeyStore) GetSubjectDataKey(ctx context.Context, subjectID st
 }
 
 func (s *SubjectPiiKeyStore) DestroySubjectKey(ctx context.Context, subjectID string) error {
-	return s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceDeleteSubjectPiiKey(conn, subjectID)
-	})
+	return s.queries.DeleteSubjectPiiKey(ctx, subjectID)
 }

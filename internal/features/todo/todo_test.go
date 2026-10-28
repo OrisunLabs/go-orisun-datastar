@@ -2,34 +2,26 @@ package todo
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 )
 
 func TestRenameTodoCommandSkipsUnchangedTitle(t *testing.T) {
 	t.Parallel()
 
-	store := newFakeTodoStore("user-1",
-		NewTodoCreatedEvent("todo-1", "user-1", "Ship starter", time.Now(), nil),
+	store := eventstoretest.New(t,
+		mustTodoEvent(NewTodoCreatedEvent("019a0000-0000-7000-8000-000000000002", "019a0000-0000-7000-8000-000000000001", "Ship starter", time.Now(), nil)),
 	)
 
-	result, err := RenameTodoCommandHandler(context.Background(), RenameTodoCommand{
-		UserRegisteredID: "user-1",
-		TodoID:           "todo-1",
-		Title:            "  Ship starter  ",
-	}, store, store)
+	err := RenameTodosCommandHandler(context.Background(), RenameTodosCommand{UserID: "019a0000-0000-7000-8000-000000000001", Operations: map[string]TodoRename{"019a0000-0000-7000-8000-000000000002": {EventID: uuidv7.NewString(), Title: "  Ship starter  ", ExpectedTitle: "Ship starter"}}}, store, store)
 	if err != nil {
-		t.Fatalf("rename todo: %v", err)
+		t.Fatal(err)
 	}
-	if !result.Skipped {
-		t.Fatal("expected unchanged rename to be skipped")
-	}
-	if got := store.countSaved(TodoRenamed); got != 0 {
+	if got := countSaved(t, store, TodoRenamed); got != 0 {
 		t.Fatalf("expected no rename event, got %d", got)
 	}
 }
@@ -37,174 +29,111 @@ func TestRenameTodoCommandSkipsUnchangedTitle(t *testing.T) {
 func TestBulkTodoActionsAppendExpectedEvents(t *testing.T) {
 	t.Parallel()
 
-	readModel := fakeTodoReadModel{todos: []views.Todo{
-		{TodoID: "active-1", Title: "Active one"},
-		{TodoID: "active-2", Title: "Active two"},
-		{TodoID: "done-1", Title: "Done one", Completed: true},
-	}}
-	store := newFakeTodoStore("user-1",
-		NewTodoCreatedEvent("active-1", "user-1", "Active one", time.Now(), nil),
-		NewTodoCreatedEvent("active-2", "user-1", "Active two", time.Now(), nil),
-		NewTodoCreatedEvent("done-1", "user-1", "Done one", time.Now(), nil),
-		NewTodoCompletedEvent("done-1-completed", "done-1", "user-1", time.Now(), nil),
+	store := eventstoretest.New(t,
+		mustTodoEvent(NewTodoCreatedEvent("019a0000-0000-7000-8000-000000000003", "019a0000-0000-7000-8000-000000000001", "Active one", time.Now(), nil)),
+		mustTodoEvent(NewTodoCreatedEvent("019a0000-0000-7000-8000-000000000004", "019a0000-0000-7000-8000-000000000001", "Active two", time.Now(), nil)),
+		mustTodoEvent(NewTodoCreatedEvent("019a0000-0000-7000-8000-000000000005", "019a0000-0000-7000-8000-000000000001", "Done one", time.Now(), nil)),
+		mustTodoEvent(NewTodoCompletedEvent("019a0000-0000-7000-8000-000000000006", "019a0000-0000-7000-8000-000000000005", "019a0000-0000-7000-8000-000000000001", time.Now(), nil)),
 	)
 
-	if err := CompleteAllActiveTodosCommandHandler(context.Background(), CompleteAllActiveTodosCommand{
-		UserRegisteredID: "user-1",
-	}, readModel, store, store); err != nil {
+	if err := CompleteTodosCommandHandler(context.Background(), CompleteTodosCommand{
+		UserID:     "019a0000-0000-7000-8000-000000000001",
+		Operations: map[string]string{"019a0000-0000-7000-8000-000000000003": "019a0000-0000-7000-8000-000000000007", "019a0000-0000-7000-8000-000000000004": "019a0000-0000-7000-8000-000000000008"},
+	}, store, store); err != nil {
 		t.Fatalf("complete active todos: %v", err)
 	}
-	if got := store.countSaved(TodoCompleted); got != 2 {
-		t.Fatalf("expected two completed events, got %d", got)
+	if got := countSaved(t, store, TodoCompleted); got != 3 {
+		t.Fatalf("expected two new completions plus the seeded completion, got %d", got)
 	}
 
-	if err := ClearCompletedTodosCommandHandler(context.Background(), ClearCompletedTodosCommand{
-		UserRegisteredID: "user-1",
-	}, readModel, store, store); err != nil {
+	if err := DeleteTodosCommandHandler(context.Background(), DeleteTodosCommand{
+		UserID:     "019a0000-0000-7000-8000-000000000001",
+		Operations: map[string]string{"019a0000-0000-7000-8000-000000000005": "019a0000-0000-7000-8000-000000000009"},
+	}, store, store); err != nil {
 		t.Fatalf("clear completed todos: %v", err)
 	}
-	if got := store.countSaved(TodoDeleted); got != 1 {
+	if got := countSaved(t, store, TodoDeleted); got != 1 {
 		t.Fatalf("expected one deleted event, got %d", got)
 	}
 }
 
-type fakeTodoReadModel struct {
-	todos []views.Todo
-	err   error
+func countSaved(t *testing.T, store *eventstore.EmbeddedOrisun, eventType string) int {
+	t.Helper()
+	events, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: eventType}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(events)
 }
 
-func (m fakeTodoReadModel) List(context.Context, string) ([]views.Todo, error) {
-	if m.err != nil {
-		return nil, m.err
+func mustTodoEvent(event eventstore.DomainEvent, err error) eventstore.DomainEvent {
+	if err != nil {
+		panic(err)
 	}
-	return append([]views.Todo(nil), m.todos...), nil
+	return event
 }
 
-type fakeTodoStore struct {
-	eventsByTodoID map[string][]eventstore.ResolvedEvent
-	saved          []eventstore.DomainEvent
-	position       int64
-}
-
-func newFakeTodoStore(userRegisteredID string, events ...eventstore.DomainEvent) *fakeTodoStore {
-	store := &fakeTodoStore{eventsByTodoID: map[string][]eventstore.ResolvedEvent{}}
-	for _, event := range events {
-		store.appendResolved(userRegisteredID, event)
-	}
-	return store
-}
-
-func (s *fakeTodoStore) SaveEvents(_ context.Context, events []eventstore.DomainEvent, _ eventstore.Position, _ []eventstore.ResolvedEvent, _ eventstore.Query) (eventstore.WriteResult, error) {
-	for _, event := range events {
-		scope := eventstore.Scope(event.Data)
-		userRegisteredID, _ := scope[TodoScopeUserRegisteredIDKey].(string)
-		s.appendResolved(userRegisteredID, event)
-		s.saved = append(s.saved, event)
-	}
-	return eventstore.WriteResult{Position: eventstore.Position{Commit: s.position, Prepare: s.position}}, nil
-}
-
-func (s *fakeTodoStore) GetEvents(_ context.Context, _ eventstore.Position, _ int, _ eventstore.Direction, query eventstore.Query) ([]eventstore.ResolvedEvent, error) {
-	todoID, ok := todoIDFromQuery(query)
-	if !ok {
-		return nil, errors.New("missing todo scope query")
-	}
-	return append([]eventstore.ResolvedEvent(nil), s.eventsByTodoID[todoID]...), nil
-}
-
-func (s *fakeTodoStore) GetLatestByCriteria(_ context.Context, criteria []eventstore.Criterion) (eventstore.LatestByCriteriaResult, error) {
-	query := eventstore.Query{Criteria: criteria}
-	todoID, ok := todoIDFromQuery(query)
-	if !ok {
-		return eventstore.LatestByCriteriaResult{}, errors.New("missing todo scope query")
-	}
-	result := eventstore.LatestByCriteriaResult{
-		Results:         make([]eventstore.LatestCriterionResult, 0, len(criteria)),
-		ContextPosition: eventstore.NoEventPosition,
-	}
-	for _, criterion := range criteria {
-		latest := eventstore.LatestCriterionResult{Criterion: criterion}
-		for _, event := range s.eventsByTodoID[todoID] {
-			if !matchesCriterion(event, criterion) {
-				continue
-			}
-			candidate := event
-			if latest.Event == nil || candidate.Position.After(latest.Event.Position) {
-				latest.Event = &candidate
-			}
+func bulkTodoFixture(t *testing.T, completed bool) (*eventstore.EmbeddedOrisun, string, map[string]string) {
+	t.Helper()
+	user := uuidv7.NewString()
+	operations := map[string]string{}
+	events := []eventstore.DomainEvent{}
+	for range 2 {
+		id := uuidv7.NewString()
+		operations[id] = uuidv7.NewString()
+		events = append(events, mustTodoEvent(NewTodoCreatedEvent(id, user, "Batch todo", time.Now(), nil)))
+		if completed {
+			events = append(events, mustTodoEvent(NewTodoCompletedEvent(uuidv7.NewString(), id, user, time.Now(), nil)))
 		}
-		if latest.Event != nil && latest.Event.Position.After(result.ContextPosition) {
-			result.ContextPosition = latest.Event.Position
+	}
+	return eventstoretest.New(t, events...), user, operations
+}
+
+func assertBulkWrite(t *testing.T, store *eventstore.EmbeddedOrisun, kind string, operations map[string]string) {
+	t.Helper()
+	events, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: kind}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeID := ""
+	found := 0
+	for _, event := range events {
+		facts, err := decodeTodoEvent(event.Event)
+		if err != nil {
+			t.Fatal(err)
 		}
-		result.Results = append(result.Results, latest)
-	}
-	return result, nil
-}
-
-func (s *fakeTodoStore) appendResolved(fallbackUserRegisteredID string, event eventstore.DomainEvent) {
-	scope := eventstore.Scope(event.Data)
-	todoID, _ := scope[TodoScopeIDKey].(string)
-	if todoID == "" {
-		todoID, _ = event.Data[TodoIDField].(string)
-	}
-	if scope[TodoScopeUserRegisteredIDKey] == nil && fallbackUserRegisteredID != "" {
-		scope[TodoScopeUserRegisteredIDKey] = fallbackUserRegisteredID
-		event.Data["scope"] = scope
-	}
-	s.position++
-	resolved := eventstore.ResolvedEvent{
-		Position: eventstore.Position{Commit: s.position, Prepare: s.position},
-		Event:    event,
-	}
-	s.eventsByTodoID[todoID] = append(s.eventsByTodoID[todoID], resolved)
-}
-
-func matchesCriterion(resolved eventstore.ResolvedEvent, criterion eventstore.Criterion) bool {
-	for _, tag := range criterion.Tags {
-		if tag.Key == "eventType" {
-			if resolved.Event.EventType != tag.Value {
-				return false
-			}
+		if event.Event.EventID != operations[facts.todoID] {
 			continue
 		}
-		value := stringDataValue(resolved.Event.Data, tag.Key)
-		if value != tag.Value {
-			return false
+		if writeID == "" {
+			writeID = event.WriteID
 		}
+		if writeID == "" || event.WriteID != writeID {
+			t.Fatal("bulk members were not appended in one write")
+		}
+		if _, duplicated := event.Event.Metadata["consistency"]; duplicated {
+			t.Fatal("batch observations duplicated into per-event metadata")
+		}
+		found++
 	}
-	return true
+	if found != len(operations) {
+		t.Fatalf("bulk outcomes=%d want=%d", found, len(operations))
+	}
+	context, err := store.GetWriteContext(t.Context(), writeID)
+	if err != nil || len(context.Consistency) != 1 || len(context.Consistency[0].Query.Criteria) != 6*len(operations) {
+		t.Fatalf("batch observation=%#v error=%v", context, err)
+	}
 }
 
-func stringDataValue(data map[string]any, key string) string {
-	current := any(data)
-	for _, part := range strings.Split(key, ".") {
-		mapped, ok := current.(map[string]any)
-		if !ok {
-			return ""
-		}
-		current = mapped[part]
-	}
-	value, _ := current.(string)
-	return value
+type bulkChangeAfterRead struct {
+	*eventstore.EmbeddedOrisun
+	change func()
 }
 
-func (s *fakeTodoStore) countSaved(eventType string) int {
-	var count int
-	for _, event := range s.saved {
-		if event.EventType == eventType {
-			count++
-		}
+func (r *bulkChangeAfterRead) GetLatestByCriteria(ctx context.Context, criteria []eventstore.Criterion) (eventstore.LatestByCriteriaResult, error) {
+	result, err := r.EmbeddedOrisun.GetLatestByCriteria(ctx, criteria)
+	if err == nil {
+		r.change()
 	}
-	return count
-}
-
-func todoIDFromQuery(query eventstore.Query) (string, bool) {
-	for _, criterion := range query.Criteria {
-		for _, tag := range criterion.Tags {
-			if tag.Key == TodoScopeIDField {
-				return tag.Value, true
-			}
-		}
-	}
-	return "", false
+	return result, err
 }

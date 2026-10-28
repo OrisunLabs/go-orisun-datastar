@@ -110,6 +110,7 @@ templ TodoRow(todo Todo) {
 			</button>
 		</form>
 		<form class="todo-title" data-on:submit={ todoRenameSSE(todo) }>
+<input type="hidden" name="expectedTitle" value={ todo.Title }/>
 			<input class="todo-title-input input input-ghost w-full" name="title" value={ todo.Title } maxlength="160" required/>
 			if todoTimeLabel(todo) != "" {
 				<span class="todo-meta">{ todoTimeLabel(todo) }</span>

@@ -2,30 +2,29 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"golang.org/x/crypto/bcrypt"
-	"zombiezen.com/go/sqlite"
 )
 
 type SessionManager struct {
-	db            *appdb.DB
+	queries       *dbsql.Queries
 	users         *AuthUserStore
 	secureCookie  bool
 	sessionCookie string
 }
 
-func NewSessionManager(db *appdb.DB, users *AuthUserStore, secureCookie bool) *SessionManager {
+func NewSessionManager(db *sql.DB, users *AuthUserStore, secureCookie bool) *SessionManager {
 	return &SessionManager{
-		db:            db,
+		queries:       dbsql.New(db),
 		users:         users,
 		secureCookie:  secureCookie,
 		sessionCookie: "go-event-starter-session",
@@ -50,21 +49,17 @@ func (s *SessionManager) Login(ctx context.Context, emailAddress, password strin
 	if err != nil {
 		return views.User{}, "", err
 	}
-	err = s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceCreateAuthSession(conn, dbsql.CreateAuthSessionParams{
-			Id:        uuidv7.NewString(),
-			Token:     token,
-			UserId:    user.ID,
-			ExpiresAt: appdb.SQLTime(time.Now().Add(90 * 24 * time.Hour)),
-		})
+	err = s.queries.CreateAuthSession(ctx, dbsql.CreateAuthSessionParams{
+		ID:        uuidv7.NewString(),
+		Token:     token,
+		UserID:    user.ID,
+		ExpiresAt: sqliteTime(time.Now().Add(90 * 24 * time.Hour)),
 	})
 	return user, token, err
 }
 
 func (s *SessionManager) Logout(ctx context.Context, token string) error {
-	return s.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceDeleteAuthSessionByToken(conn, token)
-	})
+	return s.queries.DeleteAuthSessionByToken(ctx, token)
 }
 
 func (s *SessionManager) CurrentUser(ctx context.Context, r *http.Request) (views.User, bool, error) {
@@ -74,7 +69,7 @@ func (s *SessionManager) CurrentUser(ctx context.Context, r *http.Request) (view
 	}
 	user, err := s.users.UserBySessionToken(ctx, cookie.Value)
 	if err != nil {
-		if errors.Is(err, appdb.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return views.User{}, false, nil
 		}
 		return views.User{}, false, err

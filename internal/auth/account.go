@@ -2,64 +2,72 @@ package auth
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"math/big"
 	"strings"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
-func userFromSessionRow(row *dbsql.UserBySessionTokenRes) (views.User, error) {
-	if row == nil {
-		return views.User{}, appdb.ErrNoRows
-	}
+func userFromSessionRow(row dbsql.UserBySessionTokenRow) (views.User, error) {
 	return views.User{
-		ID:               row.Id,
-		UserRegisteredID: row.UserRegisteredId,
+		ID:               row.ID,
+		UserRegisteredID: row.UserRegisteredID,
 		Name:             row.Name,
 		Username:         row.Username,
 		Email:            row.Email,
-		EmailVerified:    row.EmailVerified != 0,
+		EmailVerified:    row.EmailVerified,
 		Image:            row.Image,
 		Bio:              row.Bio,
 		HeaderImageURL:   row.HeaderImageUrl,
 	}, nil
 }
 
-func userFromRegisteredRow(row *dbsql.UserByRegisteredIdRes) (views.User, error) {
-	if row == nil {
-		return views.User{}, appdb.ErrNoRows
-	}
+func userFromRegisteredRow(row dbsql.UserByRegisteredIDRow) (views.User, error) {
 	return views.User{
-		ID:               row.Id,
-		UserRegisteredID: row.UserRegisteredId,
+		ID:               row.ID,
+		UserRegisteredID: row.UserRegisteredID,
 		Name:             row.Name,
 		Username:         row.Username,
 		Email:            row.Email,
-		EmailVerified:    row.EmailVerified != 0,
+		EmailVerified:    row.EmailVerified,
 		Image:            row.Image,
 		Bio:              row.Bio,
 		HeaderImageURL:   row.HeaderImageUrl,
 	}, nil
 }
 
-func userFromIDOrRegisteredRow(row *dbsql.UserByIdorRegisteredIdRes) (views.User, error) {
-	if row == nil {
-		return views.User{}, appdb.ErrNoRows
-	}
+func userFromIDOrRegisteredRow(row dbsql.UserByIDOrRegisteredIDRow) (views.User, error) {
 	return views.User{
-		ID:               row.Id,
-		UserRegisteredID: row.UserRegisteredId,
+		ID:               row.ID,
+		UserRegisteredID: row.UserRegisteredID,
 		Name:             row.Name,
 		Username:         row.Username,
 		Email:            row.Email,
-		EmailVerified:    row.EmailVerified != 0,
+		EmailVerified:    row.EmailVerified,
 		Image:            row.Image,
 		Bio:              row.Bio,
 		HeaderImageURL:   row.HeaderImageUrl,
 	}, nil
+}
+
+func userFromEmailWithPasswordRow(row dbsql.UserByEmailWithPasswordRow) (views.User, string, error) {
+	if row.Password == nil {
+		return views.User{}, "", sql.ErrNoRows
+	}
+	return views.User{
+		ID:               row.ID,
+		UserRegisteredID: row.UserRegisteredID,
+		Name:             row.Name,
+		Username:         row.Username,
+		Email:            row.Email,
+		EmailVerified:    row.EmailVerified,
+		Image:            row.Image,
+		Bio:              row.Bio,
+		HeaderImageURL:   row.HeaderImageUrl,
+	}, *row.Password, nil
 }
 
 func stringPtr(value string) *string {

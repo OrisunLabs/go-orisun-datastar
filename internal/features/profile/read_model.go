@@ -2,47 +2,28 @@ package profile
 
 import (
 	"context"
-	"strings"
+	"database/sql"
 
-	"github.com/OrisunLabs/go-orisun-datastar/internal/appdb"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
-	"zombiezen.com/go/sqlite"
-
-	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
-)
-
-const (
-	userRegistered  = "UserRegistered"
-	userNameChanged = "UserNameChanged"
 )
 
 type ReadModel struct {
-	db *appdb.DB
+	queries *dbsql.Queries
 }
 
-func NewReadModel(db *appdb.DB) *ReadModel {
-	return &ReadModel{db: db}
+func NewReadModel(db *sql.DB) *ReadModel {
+	return &ReadModel{queries: dbsql.New(db)}
 }
 
 func (m *ReadModel) User(ctx context.Context, userRegisteredID string) (views.User, error) {
-	var row *dbsql.ProfileUserRes
-	err := m.db.ReadTX(ctx, func(conn *sqlite.Conn) error {
-		var err error
-		row, err = dbsql.OnceProfileUser(conn, userRegisteredID)
-		return err
-	})
+	row, err := m.queries.ProfileUser(ctx, userRegisteredID)
 	if err != nil {
 		return views.User{}, err
 	}
-	if row == nil {
-		return views.User{}, appdb.ErrNoRows
-	}
 	return views.User{
-		ID:               row.UserId,
-		UserRegisteredID: row.UserId,
+		ID:               row.UserID,
+		UserRegisteredID: row.UserID,
 		Name:             row.Name,
 		Username:         row.Username,
 		Email:            row.Email,
@@ -50,102 +31,4 @@ func (m *ReadModel) User(ctx context.Context, userRegisteredID string) (views.Us
 		Bio:              row.Bio,
 		HeaderImageURL:   row.HeaderImageUrl,
 	}, nil
-}
-
-func (m *ReadModel) UpsertRegisteredUser(ctx context.Context, resolved eventstore.ResolvedEvent, keys auth.SubjectPiiKeyPort) error {
-	data := resolved.Event.Data
-	userRegisteredID, _ := data[auth.UserRegisteredIDField].(string)
-	protector := protectedpii.FromEnv()
-	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, userRegisteredID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return eventstore.ErrNotFound
-	}
-	username := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, data, auth.UserRegisteredUsernameField)
-	emailAddress := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, data, auth.UserRegisteredEmailField)
-	firstName := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, data, auth.UserRegisteredFirstNameField)
-	lastName := protectedpii.MustDecryptEventStringWithDataKey(protector, subjectKey, data, auth.UserRegisteredLastNameField)
-	name := strings.TrimSpace(firstName + " " + lastName)
-	return m.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertRegisteredProfileUser(conn, dbsql.UpsertRegisteredProfileUserParams{
-			UserId:                   userRegisteredID,
-			Name:                     stringPtr(name),
-			Username:                 stringPtr(username),
-			Email:                    stringPtr(emailAddress),
-			LastEventCommitPosition:  resolved.Position.Commit,
-			LastEventPreparePosition: resolved.Position.Prepare,
-		})
-	})
-}
-
-func (m *ReadModel) UpdateName(ctx context.Context, resolved eventstore.ResolvedEvent, keys auth.SubjectPiiKeyPort) error {
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[auth.ScopeUserRegisteredIDKey].(string)
-	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, userRegisteredID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return eventstore.ErrNotFound
-	}
-	name := protectedpii.MustDecryptEventStringWithDataKey(protectedpii.FromEnv(), subjectKey, resolved.Event.Data, auth.UserNameChangedNameField)
-	return m.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertProfileName(conn, dbsql.UpsertProfileNameParams{
-			UserId:                   userRegisteredID,
-			Name:                     stringPtr(name),
-			LastEventCommitPosition:  resolved.Position.Commit,
-			LastEventPreparePosition: resolved.Position.Prepare,
-		})
-	})
-}
-
-func (m *ReadModel) UpdateBio(ctx context.Context, resolved eventstore.ResolvedEvent, keys auth.SubjectPiiKeyPort) error {
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
-	subjectKey, ok, err := keys.GetSubjectDataKey(ctx, userRegisteredID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return eventstore.ErrNotFound
-	}
-	bio := protectedpii.MustDecryptEventStringWithDataKey(protectedpii.FromEnv(), subjectKey, resolved.Event.Data, ProfileBioUpdatedBioField)
-	return m.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertProfileBio(conn, dbsql.UpsertProfileBioParams{
-			UserId:                   userRegisteredID,
-			Bio:                      stringPtr(bio),
-			LastEventCommitPosition:  resolved.Position.Commit,
-			LastEventPreparePosition: resolved.Position.Prepare,
-		})
-	})
-}
-
-func (m *ReadModel) UpdateImage(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
-	url, _ := resolved.Event.Data[ProfileImageURLField].(string)
-	return m.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertProfileImage(conn, dbsql.UpsertProfileImageParams{
-			UserId:                   userRegisteredID,
-			Image:                    stringPtr(url),
-			LastEventCommitPosition:  resolved.Position.Commit,
-			LastEventPreparePosition: resolved.Position.Prepare,
-		})
-	})
-}
-
-func (m *ReadModel) UpdateHeaderImage(ctx context.Context, resolved eventstore.ResolvedEvent) error {
-	userRegisteredID, _ := eventstore.Scope(resolved.Event.Data)[ProfileScopeUserRegisteredIDKey].(string)
-	url, _ := resolved.Event.Data[ProfileImageURLField].(string)
-	return m.db.WriteTX(ctx, func(conn *sqlite.Conn) error {
-		return dbsql.OnceUpsertProfileHeaderImage(conn, dbsql.UpsertProfileHeaderImageParams{
-			UserId:                   userRegisteredID,
-			HeaderImageUrl:           stringPtr(url),
-			LastEventCommitPosition:  resolved.Position.Commit,
-			LastEventPreparePosition: resolved.Position.Prepare,
-		})
-	})
-}
-
-func stringPtr(value string) *string {
-	return &value
 }

@@ -77,6 +77,7 @@ func (s *NATSStore) Watch(ctx context.Context, key string, opts WatchOptions) (W
 		return nil, err
 	}
 	out := &natsWatcher{
+		ctx:     ctx,
 		watcher: watcher,
 		updates: make(chan Entry, 16),
 		done:    make(chan struct{}),
@@ -86,6 +87,7 @@ func (s *NATSStore) Watch(ctx context.Context, key string, opts WatchOptions) (W
 }
 
 type natsWatcher struct {
+	ctx     context.Context
 	watcher nats.KeyWatcher
 	updates chan Entry
 	done    chan struct{}
@@ -107,9 +109,12 @@ func (w *natsWatcher) Stop() error {
 
 func (w *natsWatcher) run() {
 	defer close(w.updates)
+	defer w.Stop()
 	for {
 		select {
 		case <-w.done:
+			return
+		case <-w.ctx.Done():
 			return
 		case entry, ok := <-w.watcher.Updates():
 			if !ok {
@@ -118,7 +123,13 @@ func (w *natsWatcher) run() {
 			if entry == nil {
 				continue
 			}
-			w.updates <- Entry{Key: entry.Key(), Value: string(entry.Value()), Operation: operationFromNATS(entry.Operation())}
+			select {
+			case w.updates <- Entry{Key: entry.Key(), Value: string(entry.Value()), Operation: operationFromNATS(entry.Operation())}:
+			case <-w.done:
+				return
+			case <-w.ctx.Done():
+				return
+			}
 		}
 	}
 }

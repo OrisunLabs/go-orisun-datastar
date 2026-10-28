@@ -65,17 +65,19 @@ func SystemCommandMetadata(systemActor, action string) CommandMetadata {
 	return CommandMetadata{"audit": audit}
 }
 
-func CommandMetadataWithQuery(commandMetadata CommandMetadata, query Query) CommandMetadata {
-	return MergeMetadata(map[string]any{"query": MustJSON(query)}, commandMetadata)
-}
-
-func SaveCommandEvents(ctx context.Context, saver Saver, commandMetadata CommandMetadata, events []DomainEvent, expected Position, scopeEvents []ResolvedEvent, subset Query) (WriteResult, error) {
+func SaveCommandEventsV2(
+	ctx context.Context,
+	saver SaverV2,
+	commandMetadata CommandMetadata,
+	events []DomainEvent,
+	consistency []ConsistencyObservation,
+) (WriteResult, error) {
 	merged := make([]DomainEvent, 0, len(events))
 	for _, event := range events {
-		event.Metadata = MergeMetadata(event.Metadata, CommandMetadataWithQuery(commandMetadata, subset))
+		event.Metadata = MergeMetadata(event.Metadata, commandMetadata)
 		merged = append(merged, event)
 	}
-	return saver.SaveEvents(ctx, merged, expected, scopeEvents, subset)
+	return saver.SaveEventsV2(ctx, merged, consistency)
 }
 
 func MergeMetadata(eventMetadata map[string]any, commandMetadata CommandMetadata) map[string]any {

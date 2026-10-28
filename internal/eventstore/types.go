@@ -30,6 +30,8 @@ func (p Position) After(other Position) bool {
 	return p.Prepare > other.Prepare
 }
 
+const EventTypeField = "eventType"
+
 type Tag struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -51,6 +53,7 @@ type DomainEvent struct {
 }
 
 type ResolvedEvent struct {
+	WriteID  string      `json:"writeId,omitempty"`
 	Position Position    `json:"position"`
 	Event    DomainEvent `json:"event"`
 }
@@ -69,13 +72,30 @@ type WriteResult struct {
 	Position Position `json:"position"`
 }
 
-type Saver interface {
-	SaveEvents(ctx context.Context, events []DomainEvent, expected Position, scopeEvents []ResolvedEvent, subset Query) (WriteResult, error)
+// WriteContext contains the observations persisted and checked by Orisun.
+type WriteContext struct {
+	WriteID     string
+	Consistency []ConsistencyObservation
+}
+
+// ConsistencyObservation preserves one exact authoritative read for atomic CCC.
+type ConsistencyObservation struct {
+	Query    Query    `json:"query"`
+	Position Position `json:"position"`
+}
+
+type SaverV2 interface {
+	SaveEventsV2(context.Context, []DomainEvent, []ConsistencyObservation) (WriteResult, error)
+}
+
+// LatestRetriever exposes bounded authority reads to command handlers.
+type LatestRetriever interface {
+	GetLatestByCriteria(context.Context, []Criterion) (LatestByCriteriaResult, error)
 }
 
 type Retriever interface {
-	GetEvents(ctx context.Context, from Position, count int, direction Direction, query Query) ([]ResolvedEvent, error)
-	GetLatestByCriteria(ctx context.Context, criteria []Criterion) (LatestByCriteriaResult, error)
+	LatestRetriever
+	GetEvents(context.Context, Position, int, Direction, Query) ([]ResolvedEvent, error)
 }
 
 type Subscriber interface {
@@ -83,7 +103,7 @@ type Subscriber interface {
 }
 
 type Store interface {
-	Saver
+	SaverV2
 	Retriever
 	Subscriber
 }
@@ -112,12 +132,11 @@ type MessageSubscriber interface {
 	Subscribe(ctx context.Context, subject string, handle func(context.Context, []byte)) (MessageSubscription, error)
 }
 
-func Scope(data map[string]any) map[string]any {
-	scope, ok := data["scope"].(map[string]any)
-	if !ok {
-		return map[string]any{}
-	}
-	return scope
+// Scopes returns plural event ancestry. Entity references belong in ordinary
+// payload fields when they cross domain boundaries.
+func Scopes(data map[string]any) map[string]any {
+	scopes, _ := data["scopes"].(map[string]any)
+	return scopes
 }
 
 func MustJSON(v any) string {
@@ -142,10 +161,16 @@ func MustData(v any) map[string]any {
 
 func EventsFromLatest(results []LatestCriterionResult) []ResolvedEvent {
 	events := make([]ResolvedEvent, 0, len(results))
+	seen := make(map[Position]struct{}, len(results))
 	for _, result := range results {
-		if result.Event != nil {
-			events = append(events, *result.Event)
+		if result.Event == nil {
+			continue
 		}
+		if _, duplicate := seen[result.Event.Position]; duplicate {
+			continue
+		}
+		seen[result.Event.Position] = struct{}{}
+		events = append(events, *result.Event)
 	}
 	sort.SliceStable(events, func(i, j int) bool {
 		left := events[i].Position

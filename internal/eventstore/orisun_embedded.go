@@ -4,25 +4,36 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	boundarymodel "github.com/OrisunLabs/Orisun/boundary"
 	"github.com/OrisunLabs/Orisun/config"
+	embeddedsqlite "github.com/OrisunLabs/Orisun/embedded/sqlite"
+	coreeventstore "github.com/OrisunLabs/Orisun/eventstore"
 	orisunlog "github.com/OrisunLabs/Orisun/logging"
-	natsruntime "github.com/OrisunLabs/Orisun/nats"
 	orisunapi "github.com/OrisunLabs/Orisun/orisun"
-	sqlitebackend "github.com/OrisunLabs/Orisun/sqlite"
 	natsgo "github.com/nats-io/nats.go"
 )
 
 type EmbeddedOrisun struct {
-	store        *orisunapi.OrisunServer
-	retriever    orisunapi.EventsRetriever
+	store        *embeddedsqlite.Store
+	client       OrisunBoundaryClient
 	indexManager orisunapi.BoundaryIndexManager
-	cancel       context.CancelFunc
-	natsRuntime  *natsruntime.Runtime
 	boundary     string
+}
+
+// OrisunBoundaryClient is the narrow embedded client shared by production and tests.
+type OrisunBoundaryClient interface {
+	GetWriteContext(context.Context, *orisunapi.GetWriteContextRequest) (*orisunapi.WriteContext, error)
+	SaveEventsV2(context.Context, []orisunapi.EventWithMapTags, string, []*orisunapi.ConsistencyObservation) (*orisunapi.Position, error)
+	GetEvents(context.Context, *orisunapi.GetEventsRequest) (orisunapi.ReadEventBatch, error)
+	GetLatestByCriteria(context.Context, orisunapi.LatestByCriteriaQuery) (orisunapi.LatestByCriteriaBatch, error)
+	SubscribeToEvents(context.Context, coreeventstore.SubscribeRequest, coreeventstore.EventHandler) error
+}
+
+func NewOrisunBoundaryStore(client OrisunBoundaryClient, boundary string) *EmbeddedOrisun {
+	return &EmbeddedOrisun{client: client, boundary: boundary}
 }
 
 type EmbeddedConfig struct {
@@ -41,7 +52,7 @@ func StartEmbeddedOrisun(ctx context.Context, cfg EmbeddedConfig) (*EmbeddedOris
 		cfg.Boundary = "go_orisun_datastar"
 	}
 	if cfg.SQLiteDir == "" {
-		cfg.SQLiteDir = "data/orisun"
+		cfg.SQLiteDir = "data/app-orisun"
 	}
 	if cfg.NATSStoreDir == "" {
 		cfg.NATSStoreDir = "/tmp/go-event-starter-orisun-nats"
@@ -52,10 +63,6 @@ func StartEmbeddedOrisun(ctx context.Context, cfg EmbeddedConfig) (*EmbeddedOris
 
 	appConfig.Backend.Type = "sqlite"
 	appConfig.Sqlite.Dir = cfg.SQLiteDir
-	appConfig.Boundaries = fmt.Sprintf(`[{"name":%q,"description":"Starter app events"},{"name":"orisun_admin","description":"Orisun admin boundary"}]`, cfg.Boundary)
-	if err := appConfig.ParseBoundaries(); err != nil {
-		return nil, err
-	}
 	appConfig.Admin.Boundary = "orisun_admin"
 	appConfig.Nats.StoreDir = cfg.NATSStoreDir
 	appConfig.Nats.Port = -1
@@ -63,112 +70,95 @@ func StartEmbeddedOrisun(ctx context.Context, cfg EmbeddedConfig) (*EmbeddedOris
 	appConfig.Logging.Level = cfg.LogLevel
 
 	logger := orisunlog.InitializeDefaultLogger(appConfig.Logging)
-	runCtx, cancel := context.WithCancel(ctx)
-
-	natsRuntime, err := natsruntime.Start(runCtx, appConfig.Nats, logger)
+	store, err := embeddedsqlite.Start(ctx, appConfig, logger)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	saveEvents, getEvents, lockProvider, adminDB, eventPublishing, signalProvider, err := sqlitebackend.InitializeSqliteDatabase(
-		runCtx,
-		appConfig.Sqlite,
-		appConfig.Admin,
-		appConfig.GetBoundaryNames(),
-		natsRuntime.JetStream,
-		logger,
-	)
-	if err != nil {
-		cancel()
-		natsRuntime.Close()
+	if err := ensureApplicationBoundary(ctx, store, cfg.Boundary); err != nil {
+		store.Close()
 		return nil, err
 	}
-	store, err := orisunapi.NewOrisunServer(runCtx, saveEvents, getEvents, lockProvider, natsRuntime.JetStream, appConfig.GetBoundaryNames(), logger)
-	if err != nil {
-		cancel()
-		natsRuntime.Close()
-		return nil, err
-	}
-	orisunapi.StartEventPolling(runCtx, appConfig, lockProvider, getEvents, natsRuntime.JetStream, eventPublishing, signalProvider, logger)
 
 	return &EmbeddedOrisun{
 		store:        store,
-		retriever:    getEvents,
-		indexManager: adminDB,
-		cancel:       cancel,
-		natsRuntime:  natsRuntime,
+		client:       store,
+		indexManager: store,
 		boundary:     cfg.Boundary,
 	}, nil
+}
+
+func ensureApplicationBoundary(ctx context.Context, store *embeddedsqlite.Store, name string) error {
+	_, err := store.CreateBoundary(ctx, boundarymodel.Definition{
+		Name:        name,
+		Description: "Starter app events",
+		Placement:   boundarymodel.Placement{Backend: "sqlite", Namespace: name},
+	})
+	if err != nil {
+		// Creation can race another instance or find an existing definition.
+		// Verify the durable definition below before accepting either case.
+		if _, lookupErr := store.GetBoundary(ctx, name); lookupErr != nil {
+			return fmt.Errorf("create application boundary: %w", err)
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		boundary, err := store.GetBoundary(waitCtx, name)
+		if err != nil {
+			return fmt.Errorf("get application boundary: %w", err)
+		}
+		if boundary.Placement.Backend != "sqlite" || boundary.Placement.Namespace != name {
+			return fmt.Errorf("application boundary %q has unexpected placement: %+v", name, boundary.Placement)
+		}
+		if boundary.Status == boundarymodel.StatusFailed {
+			return fmt.Errorf("application boundary %q provisioning failed: %s", name, boundary.LastError)
+		}
+		if boundary.Status == boundarymodel.StatusActive && store.RequireBoundaryActive(name) == nil {
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("wait for application boundary %q: %w", name, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *EmbeddedOrisun) Close(ctx context.Context) {
 	if s == nil {
 		return
 	}
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.natsRuntime != nil {
-		s.natsRuntime.Close()
+	if s.store != nil {
+		s.store.Close()
 	}
 }
 
 func (s *EmbeddedOrisun) NATSConnection() *natsgo.Conn {
-	if s == nil || s.natsRuntime == nil {
+	if s == nil || s.store == nil {
 		return nil
 	}
-	return s.natsRuntime.Conn
+	return s.store.NATSConnection()
 }
 
-func (s *EmbeddedOrisun) SaveEvents(ctx context.Context, events []DomainEvent, expected Position, scopeEvents []ResolvedEvent, subset Query) (WriteResult, error) {
+func (s *EmbeddedOrisun) SaveEventsV2(ctx context.Context, events []DomainEvent, consistency []ConsistencyObservation) (WriteResult, error) {
 	toSave := make([]orisunapi.EventWithMapTags, 0, len(events))
 	for _, event := range events {
-		event = withScopeEventIDs(event, scopeEvents)
-		data := flattenMap(event.Data)
-		toSave = append(toSave, orisunapi.EventWithMapTags{
-			EventId:   event.EventID,
-			EventType: event.EventType,
-			Data:      data,
-			Metadata:  event.Metadata,
-		})
+		toSave = append(toSave, orisunapi.EventWithMapTags{EventId: event.EventID, EventType: event.EventType, Data: flattenMap(event.Data), Metadata: event.Metadata})
 	}
-	position := toOrisunPosition(expected)
-	saved, err := s.store.SaveEvents(ctx, toSave, s.boundary, position, toOrisunQuery(subset))
+	observations := make([]*orisunapi.ConsistencyObservation, 0, len(consistency))
+	for _, observation := range consistency {
+		observations = append(observations, &orisunapi.ConsistencyObservation{Query: toOrisunQuery(observation.Query), Position: toOrisunPosition(observation.Position)})
+	}
+	saved, err := s.client.SaveEventsV2(ctx, toSave, s.boundary, observations)
 	if err != nil {
+		if strings.Contains(err.Error(), "OptimisticConcurrencyException:StreamVersionConflict") {
+			return WriteResult{}, fmt.Errorf("%w: %w", ErrConflict, err)
+		}
 		return WriteResult{}, err
 	}
 	return WriteResult{Position: fromOrisunPosition(saved)}, nil
-}
-
-func withScopeEventIDs(event DomainEvent, scopeEvents []ResolvedEvent) DomainEvent {
-	sortedEvents := append([]ResolvedEvent(nil), scopeEvents...)
-	sort.SliceStable(sortedEvents, func(i, j int) bool {
-		left := sortedEvents[i].Position
-		right := sortedEvents[j].Position
-		if left.Commit != right.Commit {
-			return left.Commit < right.Commit
-		}
-		return left.Prepare < right.Prepare
-	})
-
-	ids := make([]string, 0, len(sortedEvents))
-	seen := make(map[string]struct{}, len(sortedEvents))
-	for _, resolved := range sortedEvents {
-		id := resolved.Event.EventID
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-
-	metadata := make(map[string]any, len(event.Metadata)+1)
-	for key, value := range event.Metadata {
-		metadata[key] = value
-	}
-	metadata["scope_event_ids"] = ids
-	event.Metadata = metadata
-	return event
 }
 
 func (s *EmbeddedOrisun) GetEvents(ctx context.Context, from Position, count int, direction Direction, query Query) ([]ResolvedEvent, error) {
@@ -185,7 +175,7 @@ func (s *EmbeddedOrisun) GetEvents(ctx context.Context, from Position, count int
 	if direction == Backward {
 		req.Direction = orisunapi.Direction_DESC
 	}
-	resp, err := s.store.GetEvents(ctx, req)
+	resp, err := s.client.GetEvents(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +191,7 @@ func (s *EmbeddedOrisun) GetEvents(ctx context.Context, from Position, count int
 }
 
 func (s *EmbeddedOrisun) GetLatestByCriteria(ctx context.Context, criteria []Criterion) (LatestByCriteriaResult, error) {
-	batch, err := s.retriever.GetLatestByCriteria(ctx, orisunapi.LatestByCriteriaQuery{
+	batch, err := s.client.GetLatestByCriteria(ctx, orisunapi.LatestByCriteriaQuery{
 		Boundary: s.boundary,
 		Criteria: toOrisunReadCriteria(criteria),
 	})
@@ -230,54 +220,56 @@ func (s *EmbeddedOrisun) GetLatestByCriteria(ctx context.Context, criteria []Cri
 }
 
 func (s *EmbeddedOrisun) SubscribeToEvents(ctx context.Context, subscriberName string, after Position, query Query, handle func(context.Context, ResolvedEvent) error) error {
-	subscriptionCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	handler := orisunapi.NewMessageHandler[orisunapi.Event](subscriptionCtx)
-	errs := make(chan error, 2)
-
-	go func() {
-		for {
-			event, err := handler.Recv()
-			if err != nil {
-				errs <- err
-				return
-			}
-			data := map[string]any{}
-			if event.Data != "" {
-				if err := json.Unmarshal([]byte(event.Data), &data); err != nil {
-					errs <- err
-					return
-				}
-			}
-			metadata := map[string]any{}
-			if event.Metadata != "" {
-				_ = json.Unmarshal([]byte(event.Metadata), &metadata)
-			}
-			if err := handle(subscriptionCtx, ResolvedEvent{
-				Position: fromOrisunPosition(event.Position),
-				Event:    DomainEvent{EventID: event.EventId, EventType: event.EventType, Data: unflattenMap(data), Metadata: metadata},
-			}); err != nil {
-				errs <- err
-				return
-			}
+	return s.client.SubscribeToEvents(ctx, coreeventstore.SubscribeRequest{
+		Boundary:       s.boundary,
+		SubscriberName: subscriberName,
+		AfterPosition: &coreeventstore.Position{
+			CommitPosition:  after.Commit,
+			PreparePosition: after.Prepare,
+		},
+		Query: toOrisunCoreQuery(query),
+	}, func(handlerCtx context.Context, event coreeventstore.ReadEvent) error {
+		resolved, err := fromOrisunCoreReadEvent(event)
+		if err != nil {
+			return err
 		}
-	}()
+		return handle(handlerCtx, resolved)
+	})
+}
 
-	go func() {
-		errs <- s.store.SubscribeToEvents(subscriptionCtx, s.boundary, subscriberName, toOrisunPosition(after), toOrisunQuery(query), handler)
-	}()
-
-	select {
-	case err := <-errs:
-		cancel()
-		handler.Close()
-		return err
-	case <-ctx.Done():
-		cancel()
-		handler.Close()
-		return ctx.Err()
+func fromOrisunCoreReadEvent(event coreeventstore.ReadEvent) (ResolvedEvent, error) {
+	data := map[string]any{}
+	if event.Data != "" {
+		if err := json.Unmarshal([]byte(event.Data), &data); err != nil {
+			return ResolvedEvent{}, err
+		}
 	}
+	metadata := map[string]any{}
+	if event.Metadata != "" {
+		_ = json.Unmarshal([]byte(event.Metadata), &metadata)
+	}
+	return ResolvedEvent{
+		WriteID:  event.WriteID,
+		Position: Position{Commit: event.Position.CommitPosition, Prepare: event.Position.PreparePosition},
+		Event: DomainEvent{
+			EventID:   event.EventID,
+			EventType: event.EventType,
+			Data:      unflattenMap(data),
+			Metadata:  metadata,
+		},
+	}, nil
+}
+
+func toOrisunCoreQuery(query Query) coreeventstore.Query {
+	criteria := make([]coreeventstore.Criterion, 0, len(query.Criteria))
+	for _, criterion := range query.Criteria {
+		tags := make([]coreeventstore.Tag, 0, len(criterion.Tags))
+		for _, tag := range criterion.Tags {
+			tags = append(tags, coreeventstore.Tag{Key: toOrisunQueryKey(tag.Key), Value: tag.Value})
+		}
+		criteria = append(criteria, coreeventstore.Criterion{Tags: tags})
+	}
+	return coreeventstore.Query{Criteria: criteria}
 }
 
 func fromOrisunReadEvent(event orisunapi.ReadEvent) (ResolvedEvent, error) {
@@ -292,6 +284,7 @@ func fromOrisunReadEvent(event orisunapi.ReadEvent) (ResolvedEvent, error) {
 		_ = json.Unmarshal([]byte(event.Metadata), &metadata)
 	}
 	return ResolvedEvent{
+		WriteID:  event.WriteId,
 		Position: Position{Commit: event.CommitPosition, Prepare: event.PreparePosition},
 		Event: DomainEvent{
 			EventID:   event.EventId,
@@ -325,7 +318,7 @@ func toOrisunCriteria(input []Criterion) []*orisunapi.Criterion {
 	for _, criterion := range input {
 		tags := make([]*orisunapi.Tag, 0, len(criterion.Tags))
 		for _, tag := range criterion.Tags {
-			tags = append(tags, &orisunapi.Tag{Key: tag.Key, Value: tag.Value})
+			tags = append(tags, &orisunapi.Tag{Key: toOrisunQueryKey(tag.Key), Value: tag.Value})
 		}
 		criteria = append(criteria, &orisunapi.Criterion{Tags: tags})
 	}
@@ -337,7 +330,7 @@ func toOrisunReadCriteria(input []Criterion) []orisunapi.ReadCriterion {
 	for _, criterion := range input {
 		tags := make([]orisunapi.ReadTag, 0, len(criterion.Tags))
 		for _, tag := range criterion.Tags {
-			tags = append(tags, orisunapi.ReadTag{Key: tag.Key, Value: tag.Value})
+			tags = append(tags, orisunapi.ReadTag{Key: toOrisunQueryKey(tag.Key), Value: tag.Value})
 		}
 		criteria = append(criteria, orisunapi.ReadCriterion{Tags: tags})
 	}
@@ -390,4 +383,44 @@ func unflattenMap(input map[string]any) map[string]any {
 
 func PollingStoreDir() string {
 	return fmt.Sprintf("/tmp/go-event-starter-orisun-%d", time.Now().UnixNano())
+}
+
+// Envelope selectors are mapped only at the storage boundary, including indexes.
+func toOrisunQueryKey(key string) string {
+	switch key {
+	case EventTypeField:
+		return "__eventType"
+	case "eventId":
+		return "__eventId"
+	default:
+		return key
+	}
+}
+
+// GetWriteContext reads the store-owned observations for a boundary-scoped write.
+func (s *EmbeddedOrisun) GetWriteContext(ctx context.Context, writeID string) (WriteContext, error) {
+	stored, err := s.client.GetWriteContext(ctx, &orisunapi.GetWriteContextRequest{Boundary: s.boundary, WriteId: writeID})
+	if err != nil {
+		return WriteContext{}, err
+	}
+	result := WriteContext{WriteID: stored.WriteId, Consistency: make([]ConsistencyObservation, 0, len(stored.Consistency))}
+	for _, observation := range stored.Consistency {
+		query := Query{Criteria: make([]Criterion, 0, len(observation.Query.Criteria))}
+		for _, criterion := range observation.Query.Criteria {
+			tags := make([]Tag, 0, len(criterion.Tags))
+			for _, tag := range criterion.Tags {
+				key := tag.Key
+				switch key {
+				case "__eventType":
+					key = EventTypeField
+				case "__eventId":
+					key = "eventId"
+				}
+				tags = append(tags, Tag{Key: key, Value: tag.Value})
+			}
+			query.Criteria = append(query.Criteria, Criterion{Tags: tags})
+		}
+		result.Consistency = append(result.Consistency, ConsistencyObservation{Query: query, Position: fromOrisunPosition(observation.Position)})
+	}
+	return result, nil
 }
