@@ -149,11 +149,11 @@ func (s Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	user := currentUser(r)
 	err := auth.ChangePasswordCommandHandler(r.Context(), auth.ChangePasswordCommand{
-		User:            user,
-		CurrentPassword: r.FormValue("currentPassword"),
-		NewPassword:     r.FormValue("newPassword"),
-		Metadata:        eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever)
+		UserRegisteredID: user.UserRegisteredID,
+		CurrentPassword:  r.FormValue("currentPassword"),
+		NewPassword:      r.FormValue("newPassword"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+	}, s.EventSaver, s.EventRetriever)
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {
 			return alert(sse, err.Error())
@@ -166,17 +166,20 @@ func (s Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "settings.delete_account", nil)
 	_ = r.ParseForm()
 	user := currentUser(r)
-	_, err := auth.RequestAccountDeletionCommandHandler(r.Context(), auth.RequestAccountDeletionCommand{
-		User:     user,
-		Password: r.FormValue("password"),
-		Metadata: eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever)
+	requestID, err := auth.RequestAccountDeletionCommandHandler(r.Context(), auth.RequestAccountDeletionCommand{
+		UserRegisteredID: user.UserRegisteredID,
+		AuthUserID:       user.ID,
+		Password:         r.FormValue("password"),
+		Metadata:         eventstore.HTTPCommandMetadata(r, user.UserRegisteredID),
+	}, s.EventSaver, s.EventRetriever)
+	if err == nil {
+		s.Sessions.ClearSessionCookie(w)
+	}
 	actionSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
 		if err != nil {
 			return alert(sse, err.Error())
 		}
-		s.Sessions.ClearSessionCookie(w)
-		return sse.Redirect("/login")
+		return sse.Redirect("/account-deletion/" + requestID + "/processing")
 	})
 }
 

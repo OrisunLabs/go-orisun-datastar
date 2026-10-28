@@ -127,11 +127,15 @@ func (r *PostgreSQLProjectionRepository) Save(ctx context.Context, update Projec
 	if s.UserID == "" || s.UserID != o.UserID || o.EventType == "" || o.Position.Commit < 0 || o.Position.Prepare < 0 || s.Position == nil || s.Position.Commit < 0 || s.Position.Prepare < 0 || o.Position.After(*s.Position) {
 		return eventstore.ErrInvalidEvent
 	}
+	erased, err := q.AuthProjectionErased(ctx, s.UserID)
+	if err != nil {
+		return err
+	}
+	if erased {
+		return eventstore.ErrConflict
+	}
 	// Persist only event type and full position as replay evidence.
-	evidence, err := json.Marshal(map[string]any{fmt.Sprintf("%d/%d", o.Position.Commit, o.Position.Prepare): struct {
-		EventType string              `json:"eventType"`
-		Position  eventstore.Position `json:"position"`
-	}{o.EventType, o.Position}})
+	evidence, err := authOccurrenceEvidence(o)
 	if err != nil {
 		return err
 	}
@@ -160,4 +164,39 @@ func authProjectionPosition(commit, prepare *int64) (*eventstore.Position, error
 		return nil, eventstore.ErrInvalidEvent
 	}
 	return &eventstore.Position{Commit: *commit, Prepare: *prepare}, nil
+}
+
+func (r *PostgreSQLProjectionRepository) Erased(ctx context.Context, id string) (bool, error) {
+	q, err := r.queries(ctx)
+	if err != nil {
+		return false, err
+	}
+	return q.AuthProjectionErased(ctx, id)
+}
+func (r *PostgreSQLProjectionRepository) RecordErased(ctx context.Context, o Occurrence) error {
+	q, err := r.queries(ctx)
+	if err != nil {
+		return err
+	}
+	if !validAuthID(o.UserID) || o.EventType == "" || o.Position.Commit < 0 || o.Position.Prepare < 0 {
+		return eventstore.ErrInvalidEvent
+	}
+	evidence, err := authOccurrenceEvidence(o)
+	if err != nil {
+		return err
+	}
+	count, err := q.RecordErasedAuthOccurrence(ctx, dbsql.RecordErasedAuthOccurrenceParams{UserID: o.UserID, EventPositions: evidence})
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return eventstore.ErrNotFound
+	}
+	return nil
+}
+func authOccurrenceEvidence(o Occurrence) ([]byte, error) {
+	return json.Marshal(map[string]any{fmt.Sprintf("%d/%d", o.Position.Commit, o.Position.Prepare): struct {
+		EventType string              `json:"eventType"`
+		Position  eventstore.Position `json:"position"`
+	}{o.EventType, o.Position}})
 }

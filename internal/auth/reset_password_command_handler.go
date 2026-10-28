@@ -21,7 +21,7 @@ type PasswordResetReader interface {
 }
 
 // AuthorizePasswordResetCommandHandler authorizes immutable input. It does not change credentials.
-func AuthorizePasswordResetCommandHandler(ctx context.Context, command ResetPasswordCommand, resets PasswordResetReader, users AuthUserByIDReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (string, error) {
+func AuthorizePasswordResetCommandHandler(ctx context.Context, command ResetPasswordCommand, resets PasswordResetReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (string, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return "", err
 	}
@@ -32,25 +32,21 @@ func AuthorizePasswordResetCommandHandler(ctx context.Context, command ResetPass
 	if err != nil {
 		return "", err
 	}
-	user, err := users.UserByIDOrRegisteredID(ctx, verification.UserID)
-	if err != nil {
-		return "", err
-	}
-	if user.ID != verification.UserID && user.UserRegisteredID != verification.UserID {
-		return "", eventstore.ErrInvalidEvent
-	}
-	model, err := loadResetPasswordContext(ctx, verification.ID, user.UserRegisteredID, retriever)
+	model, err := loadResetPasswordContext(ctx, verification.ID, verification.UserID, retriever)
 	if err != nil {
 		return "", err
 	}
 	if model.request.PasswordResetRequestedID == "" || !model.registered {
 		return "", errors.New("password reset request event not found")
 	}
-	if model.request.Scopes.UserRegisteredID != user.UserRegisteredID {
+	if model.request.Scopes.UserRegisteredID != verification.UserID {
 		return "", errors.New("password reset request does not belong to registered user")
 	}
 	if model.request.ResetTokenHash != protectedpii.FromEnv().SensitiveBlindIndex(PasswordResetRequestedTokenField, command.Token) {
 		return "", errors.New("invalid password reset token")
+	}
+	if model.deleted {
+		return "", eventstore.ErrNotFound
 	}
 	if model.completed {
 		return "", errors.New("password reset already completed")
@@ -74,7 +70,7 @@ func AuthorizePasswordResetCommandHandler(ctx context.Context, command ResetPass
 	if err != nil {
 		return "", err
 	}
-	event, err := NewPasswordResetAuthorizedEvent(id, operationID, verification.ID, user.UserRegisteredID, string(hash), time.Now(), nil)
+	event, err := NewPasswordResetAuthorizedEvent(id, operationID, verification.ID, verification.UserID, string(hash), time.Now(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -85,15 +81,20 @@ func AuthorizePasswordResetCommandHandler(ctx context.Context, command ResetPass
 		[]eventstore.DomainEvent{event},
 		[]eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}, collision},
 	)
-	return id, err
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 type resetPasswordContext struct {
-	request               PasswordResetRequestedEvent
-	authorization         *PasswordResetAuthorizedEvent
-	registered, completed bool
-	query                 eventstore.Query
-	position              eventstore.Position
+	request                                                                      PasswordResetRequestedEvent
+	authorization                                                                *PasswordResetAuthorizedEvent
+	registered, completed                                                        bool
+	deleted                                                                      bool
+	registeredPosition, requestedPosition, authorizedPosition, completedPosition eventstore.Position
+	query                                                                        eventstore.Query
+	position                                                                     eventstore.Position
 }
 
 func loadResetPasswordContext(ctx context.Context, requestID, userID string, retriever eventstore.LatestRetriever) (*resetPasswordContext, error) {
@@ -118,15 +119,17 @@ func loadResetPasswordContext(ctx context.Context, requestID, userID string, ret
 				return nil, eventstore.ErrInvalidEvent
 			}
 			m.registered = true
+			m.registeredPosition = e.Position
 		case PasswordResetRequested:
 			v, err := DecodePasswordResetRequestedEvent(e.Event)
 			if err != nil {
 				return nil, err
 			}
-			if v.PasswordResetRequestedID != requestID {
+			if v.PasswordResetRequestedID != requestID || v.Scopes.UserRegisteredID != userID {
 				return nil, eventstore.ErrInvalidEvent
 			}
 			m.request = v
+			m.requestedPosition = e.Position
 		case PasswordResetAuthorized:
 			v, err := DecodePasswordResetAuthorizedEvent(e.Event)
 			if err != nil {
@@ -136,18 +139,35 @@ func loadResetPasswordContext(ctx context.Context, requestID, userID string, ret
 				return nil, eventstore.ErrInvalidEvent
 			}
 			m.authorization = &v
+			m.authorizedPosition = e.Position
+		case AccountDeleted:
+			v, err := DecodeAccountDeletedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.Scopes.UserRegisteredID != userID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			m.deleted = true
 		case PasswordResetCompleted:
 			v, err := DecodePasswordResetCompletedEvent(e.Event)
 			if err != nil {
 				return nil, err
 			}
 			completion = &v
+			m.completedPosition = e.Position
 		default:
 			return nil, eventstore.ErrInvalidEvent
 		}
 	}
+	if m.registered && m.request.PasswordResetRequestedID != "" && !m.requestedPosition.After(m.registeredPosition) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	if m.authorization != nil && (m.request.PasswordResetRequestedID == "" || !m.authorizedPosition.After(m.requestedPosition)) {
+		return nil, eventstore.ErrInvalidEvent
+	}
 	if completion != nil {
-		if completion.Scopes.PasswordResetRequestedID != requestID || completion.Scopes.UserRegisteredID != userID || m.authorization == nil || completion.Scopes.PasswordResetAuthorizedID != m.authorization.PasswordResetAuthorizedID || completion.Scopes.PasswordChangedID != m.authorization.OperationID {
+		if !m.completedPosition.After(m.authorizedPosition) || completion.Scopes.PasswordResetRequestedID != requestID || completion.Scopes.UserRegisteredID != userID || m.authorization == nil || completion.Scopes.PasswordResetAuthorizedID != m.authorization.PasswordResetAuthorizedID || completion.Scopes.PasswordChangedID != m.authorization.OperationID {
 			return nil, errors.New("password reset completion scope does not match request context")
 		}
 		m.completed = true
@@ -157,6 +177,7 @@ func loadResetPasswordContext(ctx context.Context, requestID, userID string, ret
 func resetPasswordWorkflowQuery(requestID, userID string) eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredIDField, Value: userID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: ScopeUserRegisteredIDField, Value: userID}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetRequested}, {Key: PasswordResetRequestedIDField, Value: requestID}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetAuthorized}, {Key: ScopePasswordResetRequestedIDField, Value: requestID}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordResetCompleted}, {Key: ScopePasswordResetRequestedIDField, Value: requestID}}},

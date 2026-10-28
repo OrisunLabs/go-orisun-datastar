@@ -32,9 +32,6 @@ func SetPasswordCommandHandler(ctx context.Context, command SetPasswordCommand, 
 	if m.applied {
 		return nil
 	}
-	if !m.registered {
-		return eventstore.ErrNotFound
-	}
 	event, err := NewPasswordChangedEvent(command.PasswordChangedID, time.Now(), command.UserRegisteredID, command.PasswordHash, nil)
 	if err != nil {
 		return err
@@ -56,6 +53,8 @@ func loadSetPasswordContext(ctx context.Context, command SetPasswordCommand, ret
 		return nil, err
 	}
 	m := &setPasswordContext{query: query, position: latest.ContextPosition}
+	var rootPosition, appliedPosition, deletedPosition eventstore.Position
+	deleted := false
 	for _, e := range eventstore.EventsFromLatest(latest.Results) {
 		switch e.Event.EventType {
 		case UserRegistered:
@@ -67,6 +66,17 @@ func loadSetPasswordContext(ctx context.Context, command SetPasswordCommand, ret
 				return nil, eventstore.ErrInvalidEvent
 			}
 			m.registered = true
+			rootPosition = e.Position
+		case AccountDeleted:
+			v, err := DecodeAccountDeletedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.Scopes.UserRegisteredID != command.UserRegisteredID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			deleted = true
+			deletedPosition = e.Position
 		case PasswordChanged:
 			v, err := DecodePasswordChangedEvent(e.Event)
 			if err != nil {
@@ -77,6 +87,7 @@ func loadSetPasswordContext(ctx context.Context, command SetPasswordCommand, ret
 					return nil, eventstore.ErrConflict
 				}
 				m.applied = true
+				appliedPosition = e.Position
 			} else if v.Scopes.UserRegisteredID != command.UserRegisteredID {
 				return nil, eventstore.ErrInvalidEvent
 			}
@@ -84,11 +95,27 @@ func loadSetPasswordContext(ctx context.Context, command SetPasswordCommand, ret
 			return nil, eventstore.ErrInvalidEvent
 		}
 	}
+	if !m.registered {
+		return nil, eventstore.ErrNotFound
+	}
+	if deleted && !deletedPosition.After(rootPosition) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	if m.applied {
+		if !appliedPosition.After(rootPosition) || deleted && !deletedPosition.After(appliedPosition) {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		return m, nil
+	}
+	if deleted {
+		return nil, eventstore.ErrNotFound
+	}
 	return m, nil
 }
 func setPasswordQuery(command SetPasswordCommand) eventstore.Query {
 	return eventstore.Query{Criteria: []eventstore.Criterion{
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: UserRegistered}, {Key: UserRegisteredIDField, Value: command.UserRegisteredID}}},
+		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: ScopeUserRegisteredIDField, Value: command.UserRegisteredID}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordChanged}, {Key: "eventId", Value: command.PasswordChangedID}}},
 		{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: PasswordChanged}, {Key: ScopeUserRegisteredIDField, Value: command.UserRegisteredID}}},
 	}}

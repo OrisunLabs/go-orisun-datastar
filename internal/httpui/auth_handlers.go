@@ -13,6 +13,8 @@ import (
 )
 
 func (s Server) authRoutes(r chi.Router) {
+	r.With(noCache).Get("/account-deletion/{requestID}/processing", s.accountDeletionProcessingPage)
+	r.With(noCache).Get("/account-deletion/{requestID}/stream", s.accountDeletionProgressStream)
 	r.With(noCache).Get("/register", render(views.Register(nil)))
 	r.With(noCache, signupRateLimit).Post("/register", s.register)
 	r.With(noCache).Get("/login", render(views.Login(nil)))
@@ -23,7 +25,11 @@ func (s Server) authRoutes(r chi.Router) {
 	r.With(noCache).Get("/reset-password/{token}", func(w http.ResponseWriter, r *http.Request) {
 		_ = views.ResetPassword(chi.URLParam(r, "token"), nil).Render(r.Context(), w)
 	})
+	r.With(noCache).Get("/password-reset/{authorizationID}/processing", s.passwordResetProcessingPage)
+	r.With(noCache).Get("/password-reset/{authorizationID}/stream", s.passwordResetProgressStream)
 	r.With(noCache, resetPasswordRateLimit).Post("/reset-password/{token}", s.resetPassword)
+	r.With(noCache).Get("/register/{registrationID}/processing", s.registrationProcessingPage)
+	r.With(noCache).Get("/register/{registrationID}/stream", s.registrationProgressStream)
 	r.With(noCache).Get("/register/{registrationID}/validate-email", func(w http.ResponseWriter, r *http.Request) {
 		_ = views.ValidateEmail(chi.URLParam(r, "registrationID"), nil).Render(r.Context(), w)
 	})
@@ -93,7 +99,7 @@ func (s Server) forgotPassword(w http.ResponseWriter, r *http.Request) {
 	_, _ = auth.RequestPasswordResetCommandHandler(r.Context(), auth.RequestPasswordResetCommand{
 		EmailAddress: r.FormValue("email"),
 		Metadata:     eventstore.HTTPCommandMetadata(r, ""),
-	}, s.PasswordCredentials, s.EventSaver, s.EventRetriever, s.PIIKeys)
+	}, s.EventSaver, s.EventRetriever, s.PIIKeys)
 	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
 }
 
@@ -101,16 +107,18 @@ func (s Server) resetPassword(w http.ResponseWriter, r *http.Request) {
 	setRequestAction(r, "auth.reset_password", nil)
 	_ = r.ParseForm()
 	token := chi.URLParam(r, "token")
-	_, err := auth.AuthorizePasswordResetCommandHandler(r.Context(), auth.ResetPasswordCommand{
+	authorizationID, err := auth.AuthorizePasswordResetCommandHandler(r.Context(), auth.ResetPasswordCommand{
 		Token:    token,
 		Password: r.FormValue("password"),
 		Metadata: eventstore.HTTPCommandMetadata(r, ""),
-	}, s.Verifications, s.AuthUsers, s.EventSaver, s.EventRetriever)
+	}, s.Verifications, s.EventSaver, s.EventRetriever)
 	if err != nil {
 		patchTempl(w, r, views.ResetPasswordForm(token, map[string]string{"error": err.Error()}), datastar.WithSelectorID("auth-page"))
 		return
 	}
-	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
+	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
+		return sse.Redirect("/password-reset/" + authorizationID + "/processing")
+	})
 }
 
 func (s Server) validateEmail(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +132,9 @@ func (s Server) validateEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error { return sse.Redirect("/login") })
+	writeSSE(w, r, func(sse *datastar.ServerSentEventGenerator) error {
+		return sse.Redirect("/register/" + registrationID + "/processing")
+	})
 }
 
 func (s Server) sendOTP(w http.ResponseWriter, r *http.Request) {

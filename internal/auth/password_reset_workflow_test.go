@@ -9,10 +9,9 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
-func resetWorkflowFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, string, resetTokenCandidate, resetCandidateUser) {
+func resetWorkflowFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, string, resetTokenCandidate) {
 	t.Helper()
 	owner, request := uuidv7.NewString(), uuidv7.NewString()
 	key, err := protectedpii.GenerateSubjectDataKey()
@@ -21,12 +20,12 @@ func resetWorkflowFixture(t *testing.T) (*eventstore.EmbeddedOrisun, string, str
 	}
 	requested := mustAuthEvent(NewPasswordResetRequestedEvent(request, "reset@example.com", "token", time.Now().Add(time.Hour), owner, key, nil))
 	store := eventstoretest.New(t, registeredAuthEvent(t, owner), requested)
-	return store, owner, request, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, resetCandidateUser{user: views.User{ID: owner, UserRegisteredID: owner}}
+	return store, owner, request, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}
 }
 func TestPasswordResetSeparatesAuthorizationEffectAndCompletion(t *testing.T) {
-	store, owner, request, resets, users := resetWorkflowFixture(t)
+	store, owner, request, resets := resetWorkflowFixture(t)
 	command := ResetPasswordCommand{Token: "token", Password: "updated123"}
-	id, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, users, store, store)
+	id, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,12 +37,12 @@ func TestPasswordResetSeparatesAuthorizationEffectAndCompletion(t *testing.T) {
 	if a.OperationID == id || a.OperationID == request || len(resetOutcomeFacts(t, store, PasswordChanged)) != 0 || len(resetOutcomeFacts(t, store, PasswordResetCompleted)) != 0 {
 		t.Fatal("authorization applied domain change")
 	}
-	retry, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, users, store, store)
+	retry, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, store, store)
 	if err != nil || retry != id {
 		t.Fatalf("authorization retry changed frozen operation: %v", err)
 	}
 	command.Password = "different123"
-	if _, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, users, store, store); !errors.Is(err, eventstore.ErrConflict) {
+	if _, err := AuthorizePasswordResetCommandHandler(t.Context(), command, resets, store, store); !errors.Is(err, eventstore.ErrConflict) {
 		t.Fatalf("authorization replaced password: %v", err)
 	}
 	if err := CompletePasswordResetCommandHandler(t.Context(), CompletePasswordResetCommand{PasswordChangedID: a.OperationID}, store, store); !errors.Is(err, eventstore.ErrNotFound) {
@@ -87,7 +86,7 @@ func TestPasswordResetSeparatesAuthorizationEffectAndCompletion(t *testing.T) {
 	if _, ok := receipts[0].Event.Data["passwordHash"]; ok {
 		t.Fatal("workflow completion contains credential state")
 	}
-	model, err := loadChangePasswordContext(t.Context(), ChangePasswordCommand{User: users.user}, store)
+	model, err := loadChangePasswordContext(t.Context(), ChangePasswordCommand{UserRegisteredID: owner}, store)
 	if err != nil || model.passwordHash != newerHash {
 		t.Fatalf("workflow completion changed effective authority: %v", err)
 	}
@@ -99,14 +98,14 @@ func TestPasswordResetSeparatesAuthorizationEffectAndCompletion(t *testing.T) {
 func TestResetAuthorizationChecksAuthoritativeTokenAndExpiry(t *testing.T) {
 	for _, scenario := range []string{"wrong token", "expired source"} {
 		t.Run(scenario, func(t *testing.T) {
-			store, owner, request, resets, users := resetWorkflowFixture(t)
+			store, owner, request, resets := resetWorkflowFixture(t)
 			token := "wrong"
 			if scenario == "expired source" {
 				token = "token"
 				key, _ := protectedpii.GenerateSubjectDataKey()
 				store = eventstoretest.New(t, registeredAuthEvent(t, owner), mustAuthEvent(NewPasswordResetRequestedEvent(request, "reset@example.com", token, time.Now().Add(-time.Hour), owner, key, nil)))
 			}
-			if _, err := AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: token, Password: "updated123"}, resets, users, store, store); err == nil {
+			if _, err := AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: token, Password: "updated123"}, resets, store, store); err == nil {
 				t.Fatal("projection candidate bypassed token authority")
 			}
 			if len(resetOutcomeFacts(t, store, PasswordResetAuthorized)) != 0 {
@@ -158,8 +157,8 @@ func TestSetPasswordWorksWithoutResetWorkflow(t *testing.T) {
 }
 
 func TestPasswordResetExecutionDoesNotCompleteWorkflow(t *testing.T) {
-	store, _, _, resets, users := resetWorkflowFixture(t)
-	if _, err := AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resets, users, store, store); err != nil {
+	store, _, _, resets := resetWorkflowFixture(t)
+	if _, err := AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resets, store, store); err != nil {
 		t.Fatal(err)
 	}
 	authorization := resetOutcomeFacts(t, store, PasswordResetAuthorized)[0]

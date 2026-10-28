@@ -1,7 +1,8 @@
 package config
 
 import (
-	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 )
@@ -37,22 +38,21 @@ func Load() Config {
 
 	pgURL := os.Getenv("DATABASE_URL")
 	if pgURL == "" {
-		pgURL = fmt.Sprintf(
-			"postgres://%s:%s@%s:%s/%s?sslmode=%s",
-			env("POSTGRES_USER", "postgres"),
-			env("POSTGRES_PASSWORD", "postgres"),
-			env("POSTGRES_HOST", "localhost"),
-			env("POSTGRES_PORT", "5432"),
-			env("POSTGRES_DB", "go_orisun_datastar"),
-			sslMode,
-		)
+		connection := url.URL{
+			Scheme:   "postgres",
+			User:     url.UserPassword(env("POSTGRES_USER", "postgres"), env("POSTGRES_PASSWORD", "postgres")),
+			Host:     net.JoinHostPort(env("POSTGRES_HOST", "localhost"), env("POSTGRES_PORT", "5432")),
+			Path:     "/" + env("POSTGRES_DB", "go_orisun_datastar"),
+			RawQuery: url.Values{"sslmode": {sslMode}}.Encode(),
+		}
+		pgURL = connection.String()
 	}
 
 	return Config{
 		Port:              port,
 		AppURL:            env("APP_URL", "http://localhost:"+port),
 		PostgresURL:       pgURL,
-		PostgresHost:      env("POSTGRES_HOST", "localhost"),
+		PostgresHost:      env("POSTGRES_HOST", "127.0.0.1"),
 		PostgresPort:      env("POSTGRES_PORT", "5432"),
 		PostgresUser:      env("POSTGRES_USER", "postgres"),
 		PostgresPassword:  env("POSTGRES_PASSWORD", "postgres"),

@@ -14,6 +14,7 @@ import (
 // ProfileSource translates owning profile contracts at composition without a reverse package dependency.
 type ProfileSource struct {
 	EventTypes []string
+	Owner      func(eventstore.DomainEvent) (string, error)
 	Decode     func(context.Context, eventstore.DomainEvent, SubjectPiiKeyReader) (AuthChange, error)
 }
 
@@ -42,9 +43,30 @@ func ProjectBatch(ctx context.Context, events []eventstore.ResolvedEvent, reposi
 				affected[owner] = true
 				continue
 			}
+			id, err := authProjectionOwner(resolved.Event, source)
+			if err != nil {
+				return err
+			}
+			if !validAuthID(id) {
+				return eventstore.ErrInvalidEvent
+			}
+			erased, err := repository.Erased(txCtx, id)
+			if err != nil {
+				return err
+			}
+			if erased {
+				if err := repository.RecordErased(txCtx, Occurrence{UserID: id, EventType: resolved.Event.EventType, Position: resolved.Position}); err != nil {
+					return err
+				}
+				affected[id] = true
+				continue
+			}
 			change, err := decodeAuthChange(txCtx, resolved, keys, source)
 			if err != nil {
 				return err
+			}
+			if change.AuthUserID() != id {
+				return eventstore.ErrInvalidEvent
 			}
 			state, err := repository.Load(txCtx, change.AuthUserID())
 			if err != nil {
@@ -214,4 +236,27 @@ func applyAuthChange(state *AuthState, change AuthChange, pos eventstore.Positio
 	}
 	next.Position = &pos
 	return next, nil
+}
+
+// Decode the owning strict contract before consulting erasure, without decrypting PII.
+func authProjectionOwner(e eventstore.DomainEvent, source ProfileSource) (string, error) {
+	switch e.EventType {
+	case UserRegistered:
+		v, err := DecodeUserRegisteredEvent(e)
+		return v.UserRegisteredID, err
+	case UserNameChanged:
+		v, err := DecodeUserNameChangedEvent(e)
+		return v.Scopes.UserRegisteredID, err
+	case PasswordChanged:
+		v, err := DecodePasswordChangedEvent(e)
+		return v.Scopes.UserRegisteredID, err
+	case PasswordResetRequested:
+		v, err := DecodePasswordResetRequestedEvent(e)
+		return v.Scopes.UserRegisteredID, err
+	default:
+		if source.Owner != nil {
+			return source.Owner(e)
+		}
+		return "", eventstore.ErrInvalidEvent
+	}
 }

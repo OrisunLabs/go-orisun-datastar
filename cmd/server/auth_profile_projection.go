@@ -18,6 +18,21 @@ func (p authUserInvalidator) InvalidateAuthUser(ctx context.Context, id string) 
 
 func authProfileSource() auth.ProfileSource {
 	return auth.ProfileSource{
+		Owner: func(event eventstore.DomainEvent) (string, error) {
+			switch event.EventType {
+			case profile.ProfileImageUploaded:
+				v, err := profile.DecodeProfileImageUploadedEvent(event)
+				return v.UserID, err
+			case profile.ProfileHeaderImageUploaded:
+				v, err := profile.DecodeProfileHeaderImageUploadedEvent(event)
+				return v.UserID, err
+			case profile.ProfileBioUpdated:
+				v, err := profile.DecodeProfileBioUpdatedEvent(event)
+				return v.UserID, err
+			default:
+				return "", eventstore.ErrInvalidEvent
+			}
+		},
 		EventTypes: []string{profile.ProfileImageUploaded, profile.ProfileBioUpdated, profile.ProfileHeaderImageUploaded},
 		Decode: func(ctx context.Context, event eventstore.DomainEvent, keys auth.SubjectPiiKeyReader) (auth.AuthChange, error) {
 			switch event.EventType {

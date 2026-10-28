@@ -48,7 +48,7 @@ func TestRecordedEmailReplayDoesNotNeedSubjectKey(t *testing.T) {
 					}
 				} else {
 					sourceType, outcomeType = PasswordResetRequested, PasswordResetEmailSent
-					requested, err := RequestPasswordResetCommandHandler(t.Context(), RequestPasswordResetCommand{EmailAddress: user.Email}, resetTestUser{user: user}, store, store, keys)
+					requested, err := RequestPasswordResetCommandHandler(t.Context(), RequestPasswordResetCommand{EmailAddress: user.Email}, store, store, keys)
 					if err != nil {
 						t.Fatal(err)
 					}

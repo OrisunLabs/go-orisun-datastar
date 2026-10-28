@@ -89,3 +89,24 @@ func TestDeleteAccountHasNoRequestWorkflowDependencies(t *testing.T) {
 		return true
 	})
 }
+
+func TestAuthCommandsDoNotDependOnReadModels(t *testing.T) {
+	for _, path := range []string{"../auth/change_password_command_handler.go", "../auth/update_user_name_command_handler.go", "../auth/request_account_deletion_command_handler.go", "../auth/request_password_reset_command_handler.go", "../auth/reset_password_command_handler.go"} {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forbidden := map[string]bool{"PasswordCredentialReader": true, "AuthUserByIDReader": true, "SubjectPiiKeyPort": true}
+		for _, imp := range file.Imports {
+			if strings.Contains(imp.Path.Value, "/internal/views") || strings.Contains(imp.Path.Value, "/internal/dbsql") {
+				t.Errorf("%s imports read-model dependency %s", path, imp.Path.Value)
+			}
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if name, ok := node.(*ast.Ident); ok && forbidden[name.Name] {
+				t.Errorf("%s depends on broad port %s", path, name.Name)
+			}
+			return true
+		})
+	}
+}

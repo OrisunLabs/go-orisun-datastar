@@ -83,3 +83,15 @@ func viewKey(parts ...string) string {
 	}
 	return strings.Join(clean, "//")
 }
+
+func RegistrationProgressKey(sessionID, registrationID string) string {
+	return viewKey("registration-progress", sessionID, registrationID)
+}
+
+func PasswordResetProgressKey(sessionID, authorizationID string) string {
+	return viewKey("password-reset-progress", sessionID, authorizationID)
+}
+
+func AccountDeletionProgressKey(sessionID, requestID string) string {
+	return viewKey("account-deletion-progress", sessionID, requestID)
+}

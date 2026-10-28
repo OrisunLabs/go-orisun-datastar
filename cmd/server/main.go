@@ -128,20 +128,20 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 	defer stopEventHandlers(handlers)
 
 	app := httpui.Server{
-		Sessions:            components.sessionManager,
-		AuthUsers:           components.authUsers,
-		PIIKeys:             components.piiKeys,
-		PasswordCredentials: components.authUsers,
-		Verifications:       components.verifications,
-		Todos:               components.todoReadModel,
-		Profiles:            components.profileReadModel,
-		EventSaver:          orisunStore,
-		EventRetriever:      orisunStore,
-		ProfileStorage:      components.profileStorage,
-		Subscriber:          bus,
-		ViewStore:           viewStore,
-		Development:         cfg.DevelopmentCookie,
-		Logger:              logger,
+		Sessions:               components.sessionManager,
+		RegistrationReadiness:  components.authUsers,
+		PasswordResetReadiness: components.authUsers,
+		PIIKeys:                components.piiKeys,
+		Verifications:          components.verifications,
+		Todos:                  components.todoReadModel,
+		Profiles:               components.profileReadModel,
+		EventSaver:             orisunStore,
+		EventRetriever:         orisunStore,
+		ProfileStorage:         components.profileStorage,
+		Subscriber:             bus,
+		ViewStore:              viewStore,
+		Development:            cfg.DevelopmentCookie,
+		Logger:                 logger,
 	}
 	return serveHTTP(ctx, stop, cfg.Port, app.Routes(), logger)
 }

@@ -142,3 +142,27 @@ WHERE user_id IN (SELECT id
 DELETE
 FROM auth_user
 WHERE user_registered_id = @user_registered_id;
+
+-- name: UserRegistrationReady :one
+SELECT EXISTS (SELECT 1
+               FROM auth_user u
+                        JOIN auth_account a ON a.id = u.id || ':credential'
+               WHERE u.id = @user_registered_id
+                 AND u.user_registered_id = @user_registered_id
+                 AND u.email_verified
+                 AND a.user_id = u.id
+                 AND a.provider_id = 'credential'
+                 AND NULLIF(a.password, '') IS NOT NULL) AS ready;
+
+-- name: PasswordResetReady :one
+SELECT EXISTS (SELECT 1
+               FROM auth_user u
+                        JOIN auth_account a ON a.id = u.id || ':credential'
+               WHERE u.id = @user_registered_id
+                 AND u.user_registered_id = @user_registered_id
+                 AND u.email_verified
+                 AND a.user_id = u.id
+                 AND a.provider_id = 'credential'
+                 AND NULLIF(a.password, '') IS NOT NULL
+                 AND (u.last_event_commit_position, u.last_event_prepare_position) >=
+                     (@commit_position::bigint, @prepare_position::bigint)) AS ready;

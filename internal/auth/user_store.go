@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
@@ -47,4 +48,13 @@ func (s *AuthUserStore) UserByEmailWithPassword(ctx context.Context, emailAddres
 		return views.User{}, "", err
 	}
 	return userFromEmailWithPasswordRow(row)
+}
+
+// RegistrationReady checks the login projection, including its credential row.
+func (s *AuthUserStore) RegistrationReady(ctx context.Context, userRegisteredID string) (bool, error) {
+	return s.queries.UserRegistrationReady(ctx, userRegisteredID)
+}
+
+func (s *AuthUserStore) PasswordResetReady(ctx context.Context, id string, position eventstore.Position) (bool, error) {
+	return s.queries.PasswordResetReady(ctx, dbsql.PasswordResetReadyParams{UserRegisteredID: id, CommitPosition: position.Commit, PreparePosition: position.Prepare})
 }

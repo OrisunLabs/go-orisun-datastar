@@ -60,14 +60,15 @@ func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameComman
 	if name == "" {
 		return nil, errors.New("name is required")
 	}
-	query := updateUserNameCombineQueries(updateUserNameUserRegisteredQuery(command.UserRegisteredID), updateUserNameUserNameChangedByUserQuery(command.UserRegisteredID))
+	query := updateUserNameCombineQueries(updateUserNameUserRegisteredQuery(command.UserRegisteredID), updateUserNameUserNameChangedByUserQuery(command.UserRegisteredID), updateUserNameAccountDeletedQuery(command.UserRegisteredID))
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	var root *UserRegisteredEvent
 	var changed *UserNameChangedEvent
-	var rootPosition, changedPosition eventstore.Position
+	var rootPosition, changedPosition, deletedPosition eventstore.Position
+	deleted := false
 	for _, e := range eventstore.EventsFromLatest(latest.Results) {
 		switch e.Event.EventType {
 		case UserRegistered:
@@ -80,6 +81,16 @@ func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameComman
 			}
 			root = &v
 			rootPosition = e.Position
+		case AccountDeleted:
+			v, err := DecodeAccountDeletedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.Scopes.UserRegisteredID != command.UserRegisteredID {
+				return nil, eventstore.ErrInvalidEvent
+			}
+			deleted = true
+			deletedPosition = e.Position
 		case UserNameChanged:
 			v, err := DecodeUserNameChangedEvent(e.Event)
 			if err != nil {
@@ -101,6 +112,12 @@ func loadUpdateUserNameContext(ctx context.Context, command UpdateUserNameComman
 	}
 	if changed != nil && !changedPosition.After(rootPosition) {
 		return nil, eventstore.ErrInvalidEvent
+	}
+	if deleted {
+		if !deletedPosition.After(rootPosition) {
+			return nil, eventstore.ErrInvalidEvent
+		}
+		return nil, eventstore.ErrNotFound
 	}
 	key, ok, err := keys.GetSubjectDataKey(ctx, command.UserRegisteredID)
 	if err != nil {
@@ -169,4 +186,8 @@ func updateUserNameUserRegisteredQuery(userRegisteredID string) eventstore.Query
 		{Key: eventstore.EventTypeField, Value: UserRegistered},
 		{Key: UserRegisteredIDField, Value: userRegisteredID},
 	}}}}
+}
+
+func updateUserNameAccountDeletedQuery(userID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: ScopeUserRegisteredIDField, Value: userID}}}}}
 }

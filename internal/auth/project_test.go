@@ -73,6 +73,7 @@ func TestAuthProjectionFoldRetainsMutableStateOnHistoricalRegistration(t *testin
 }
 
 type authProjectionFake struct {
+	erased              map[string]bool
 	states              map[string]AuthState
 	receipts            map[eventstore.Position]string
 	facts               map[string]VerificationFact
@@ -202,4 +203,15 @@ func TestAuthSubscriptionIncludesInjectedProfileTypes(t *testing.T) {
 			t.Fatal("subscription changed shape")
 		}
 	}
+}
+
+func (r *authProjectionFake) Erased(_ context.Context, id string) (bool, error) {
+	return r.erased[id], nil
+}
+func (r *authProjectionFake) RecordErased(_ context.Context, o Occurrence) error {
+	if !r.erased[o.UserID] {
+		return eventstore.ErrNotFound
+	}
+	r.receipts[o.Position] = o.UserID
+	return nil
 }

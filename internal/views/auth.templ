@@ -56,7 +56,7 @@ templ ResetPassword(token string, errors map[string]string) {
 }
 
 templ ResetPasswordForm(token string, errors map[string]string) {
-	@AuthForm("/reset-password/" + token, "Reset password", []Field{
+	@AuthForm("/reset-password/"+token, "Reset password", []Field{
 		{Name: "password", Type: "password", Label: "New password"},
 	}, errors) {
 	}
@@ -69,11 +69,94 @@ templ ValidateEmail(registrationID string, errors map[string]string) {
 }
 
 templ ValidateEmailForm(registrationID string, errors map[string]string) {
-	@AuthForm("/register/" + registrationID + "/validate-email", "Validate email", []Field{
+	@AuthForm("/register/"+registrationID+"/validate-email", "Validate email", []Field{
 		{Name: "otp", Type: "text", Label: "Verification code"},
 	}, errors) {
 		<form class="w-full" data-on:submit={ sendValidationOTPSSE(registrationID) }>
 			<button class="btn btn-outline w-full" type="submit">Send new code</button>
 		</form>
 	}
+}
+
+templ RegistrationProcessing(registrationID string, stage string) {
+	@Base("Account registration") {
+		@AuthForm("", "Account registration", nil, nil) {
+			<div data-init={ longRunningGetSSE("/register/" + registrationID + "/stream") }>
+				@RegistrationProgressPanel(registrationID, stage)
+			</div>
+		}
+	}
+}
+
+templ RegistrationProgressPanel(registrationID string, stage string) {
+	<div id="registration-status" class="grid gap-4" role="status" aria-live="polite" aria-atomic="true">
+		if stage == "failed" {
+			<p>We couldn't create this account. The username or email is no longer available.</p>
+			<a class="btn btn-primary w-full" href="/register">Start again</a>
+		} else if stage == "unavailable" {
+			<p>This registration is no longer available.</p>
+			<a class="btn btn-primary w-full" href="/register">Start again</a>
+		} else {
+			<div class="flex items-center gap-3">
+				<span class="loading loading-spinner loading-sm" aria-hidden="true"></span>
+				<p>Your email is verified. We're creating your account.</p>
+			</div>
+			<p>We'll take you to sign in as soon as it's ready. You can leave this page open.</p>
+			<a href={ templ.SafeURL("/register/" + registrationID + "/processing") }>Check again</a>
+		}
+	</div>
+}
+
+templ PasswordResetProcessing(authorizationID string, stage string) {
+	@Base("Password reset") {
+		@AuthForm("", "Password reset", nil, nil) {
+			<div data-init={ longRunningGetSSE("/password-reset/" + authorizationID + "/stream") }>
+				@PasswordResetProgressPanel(authorizationID, stage)
+			</div>
+		}
+	}
+}
+
+templ PasswordResetProgressPanel(authorizationID string, stage string) {
+	<div id="password-reset-status" class="grid gap-4" role="status" aria-live="polite" aria-atomic="true">
+		if stage == "ready" {
+			<p>Your password has been reset. You can now sign in with your new password.</p>
+			<a class="btn btn-primary w-full" href="/login">Sign in</a>
+		} else if stage == "unavailable" {
+			<p>This password reset is no longer available.</p>
+			<a class="btn btn-primary w-full" href="/forgot-password">Request another reset</a>
+		} else {
+			<div class="flex items-center gap-3">
+				<span class="loading loading-spinner loading-sm" aria-hidden="true"></span>
+				<p>We're updating your password. You can leave this page open.</p>
+			</div>
+			<a href={ templ.SafeURL("/password-reset/" + authorizationID + "/processing") }>Check again</a>
+		}
+	</div>
+}
+
+templ AccountDeletionProcessing(requestID string, stage string) {
+	@Base("Account deletion") {
+		@AuthForm("", "Account deletion", nil, nil) {
+			<div data-init={ longRunningGetSSE("/account-deletion/" + requestID + "/stream") }>
+				@AccountDeletionProgressPanel(requestID, stage)
+			</div>
+		}
+	}
+}
+
+templ AccountDeletionProgressPanel(requestID string, stage string) {
+	<div id="account-deletion-status" class="grid gap-4" role="status" aria-live="polite" aria-atomic="true">
+		if stage == "complete" {
+			<p>Your account has been deleted.</p>
+			<a class="btn btn-primary w-full" href="/login">Return to sign in</a>
+		} else {
+			<div class="flex items-center gap-3">
+				<span class="loading loading-spinner loading-sm" aria-hidden="true"></span>
+				<p>You're signed out. We're deleting your account and its data.</p>
+			</div>
+			<p>You can leave this page open while we finish.</p>
+			<a href={ templ.SafeURL("/account-deletion/" + requestID + "/processing") }>Check again</a>
+		}
+	</div>
 }

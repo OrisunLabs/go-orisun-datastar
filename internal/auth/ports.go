@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/email"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 type EmailSender interface {
@@ -17,12 +16,4 @@ type AccountDataDeletionPort interface {
 
 type AccountPiiKeyPort interface {
 	DestroySubjectKey(ctx context.Context, userRegisteredID string) error
-}
-
-type PasswordCredentialReader interface {
-	UserByEmailWithPassword(ctx context.Context, emailAddress string) (views.User, string, error)
-}
-
-type AuthUserByIDReader interface {
-	UserByIDOrRegisteredID(ctx context.Context, id string) (views.User, error)
 }

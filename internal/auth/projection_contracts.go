@@ -14,6 +14,8 @@ type SubjectPiiKeyReader interface {
 type ProjectionRepository interface {
 	WithinTransaction(context.Context, func(context.Context) error) error
 	Processed(context.Context, eventstore.Position) (string, error)
+	Erased(context.Context, string) (bool, error)
+	RecordErased(context.Context, Occurrence) error
 	Load(context.Context, string) (*AuthState, error)
 	LoadVerification(context.Context, string) (*VerificationFact, error)
 	Save(context.Context, ProjectionUpdate) error

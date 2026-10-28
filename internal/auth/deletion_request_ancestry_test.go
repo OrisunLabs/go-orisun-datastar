@@ -8,7 +8,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
 func TestDeletionRequestValidatesCompletionAncestry(t *testing.T) {
@@ -31,10 +30,8 @@ func TestDeletionRequestValidatesCompletionAncestry(t *testing.T) {
 				facts = append(facts, mustAuthEvent(NewAccountDeletedEvent(completedOperation, time.Now(), authID, owner, nil)))
 			}
 			store := eventstoretest.New(t, facts...)
-			user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
-			credentials := ownershipCredentials{user: user, hash: testAuthHash(t)}
 			before := len(resetOutcomeFacts(t, store, AccountDeletionRequested))
-			result, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, credentials, store, store)
+			result, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: "secret123"}, store, store)
 			if reject {
 				if err == nil || result != "" {
 					t.Fatal("inconsistent completion accepted as an idempotent retry")
@@ -58,7 +55,7 @@ func TestDeletionRequestValidatesCompletionAncestry(t *testing.T) {
 				t.Fatal("unexpected additional request event")
 			}
 			if !reject {
-				repeated, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, credentials, store, store)
+				repeated, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: "secret123"}, store, store)
 				if err != nil || repeated != result || len(resetOutcomeFacts(t, store, AccountDeletionRequested)) != expected {
 					t.Fatal("valid retry changed outcome")
 				}

@@ -10,7 +10,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -28,7 +27,6 @@ func TestPasswordMutationsUseAuthoritativeCredential(t *testing.T) {
 			for _, scenario := range []string{"registration", "stale after change", "latest after change", "stale after reset", "latest after reset", "change after reset", "reset after change", "foreign change", "missing registration", "malformed reset"} {
 				t.Run(scenario, func(t *testing.T) {
 					owner, foreign := uuidv7.NewString(), uuidv7.NewString()
-					user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
 					root := registeredAuthEvent(t, owner)
 					changed := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, authorityPasswordHash(t, "changed-secret"), nil))
 					reset := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, authorityPasswordHash(t, "reset-secret"), nil))
@@ -66,7 +64,6 @@ func TestPasswordMutationsUseAuthoritativeCredential(t *testing.T) {
 						reject = true
 					}
 					store := eventstoretest.New(t, facts...)
-					credentials := ownershipCredentials{user: user, hash: testAuthHash(t)} // Deliberately lagging projection.
 					eventType := PasswordChanged
 					if intent == "delete" {
 						eventType = AccountDeletionRequested
@@ -74,9 +71,9 @@ func TestPasswordMutationsUseAuthoritativeCredential(t *testing.T) {
 					before := len(resetOutcomeFacts(t, store, eventType))
 					var err error
 					if intent == "change" {
-						err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{User: user, CurrentPassword: password, NewPassword: "updated123"}, credentials, store, store)
+						err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{UserRegisteredID: owner, CurrentPassword: password, NewPassword: "updated123"}, store, store)
 					} else {
-						_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: password}, credentials, store, store)
+						_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: password}, store, store)
 					}
 					if reject && err == nil {
 						t.Fatal("stale or missing password authority accepted")
@@ -103,7 +100,6 @@ func TestPasswordMutationsConflictWithConcurrentCredentialChange(t *testing.T) {
 	for _, intent := range []string{"change", "delete"} {
 		t.Run(intent, func(t *testing.T) {
 			owner := uuidv7.NewString()
-			user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
 			store := eventstoretest.New(t, registeredAuthEvent(t, owner))
 			hash := authorityPasswordHash(t, "racing-secret")
 			racing := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, hash, nil))
@@ -131,14 +127,13 @@ func TestPasswordMutationsConflictWithConcurrentCredentialChange(t *testing.T) {
 				_, err = store.SaveEventsV2(ctx, []eventstore.DomainEvent{racing}, nil)
 				return latest, err
 			})
-			credentials := ownershipCredentials{user: user, hash: testAuthHash(t)}
 			var err error
 			eventType := PasswordChanged
 			if intent == "change" {
-				err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{User: user, CurrentPassword: "secret123", NewPassword: "updated123"}, credentials, store, retriever)
+				err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{UserRegisteredID: owner, CurrentPassword: "secret123", NewPassword: "updated123"}, store, retriever)
 			} else {
 				eventType = AccountDeletionRequested
-				_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, credentials, store, retriever)
+				_, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: "secret123"}, store, retriever)
 			}
 			if !errors.Is(err, eventstore.ErrConflict) {
 				t.Fatalf("concurrent credential change did not invalidate append: %v", err)

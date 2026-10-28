@@ -52,7 +52,7 @@ func StartUserRegistrationCommandHandler(ctx context.Context, command StartUserR
 	if err != nil {
 		return StartUserRegistrationResult{}, err
 	}
-	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}, {Query: startUserRegistrationCollisionQuery(model.registrationID, model.userID), Position: eventstore.NoEventPosition}}); err != nil {
+	if _, err := eventstore.SaveCommandEventsV2(ctx, saver, command.Metadata, []eventstore.DomainEvent{event}, []eventstore.ConsistencyObservation{{Query: model.query, Position: model.position}}); err != nil {
 		return StartUserRegistrationResult{}, err
 	}
 	return StartUserRegistrationResult{UserRegistrationStartedID: model.registrationID, UserID: model.userID}, nil
@@ -64,13 +64,10 @@ type startUserRegistrationContext struct {
 	userID           string
 	registrationID   string
 	username         string
-	usernameHash     string
 	email            string
-	emailHash        string
 	firstName        string
 	lastName         string
 	position         eventstore.Position
-	events           []eventstore.ResolvedEvent
 	query            eventstore.Query
 }
 
@@ -84,48 +81,62 @@ func loadStartUserRegistrationContext(ctx context.Context, command StartUserRegi
 	protector := protectedpii.FromEnv()
 	usernameHash := protector.BlindIndex(UserRegisteredUsernameField, username)
 	emailHash := protector.BlindIndex(UserRegisteredEmailField, email)
-	query := startUserRegistrationUserRegisteredByUsernameOrEmailQuery(usernameHash, emailHash)
+	registrationID, userID := uuidv7.NewString(), uuidv7.NewString()
+	query := startUserRegistrationQuery(usernameHash, emailHash, registrationID, userID)
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
-	events := eventstore.EventsFromLatest(latest.Results)
-	for _, checked := range events {
-		if err := ValidateEvent(checked.Event); err != nil {
-			return nil, err
-		}
-	}
-
 	model := &startUserRegistrationContext{
-		userID:         uuidv7.NewString(),
-		registrationID: uuidv7.NewString(),
+		userID:         userID,
+		registrationID: registrationID,
 		username:       username,
-		usernameHash:   usernameHash,
 		email:          email,
-		emailHash:      emailHash,
 		firstName:      strings.TrimSpace(command.FirstName),
 		lastName:       strings.TrimSpace(command.LastName),
 		position:       latest.ContextPosition,
-		events:         events,
 		query:          query,
 	}
-	for _, event := range events {
-		model.handle(event)
+	for _, e := range eventstore.EventsFromLatest(latest.Results) {
+		switch e.Event.EventType {
+		case UserRegistered:
+			v, err := DecodeUserRegisteredEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.UserRegisteredID == userID {
+				return nil, eventstore.ErrConflict
+			}
+			if v.UsernameHash == usernameHash {
+				model.existingUsername = true
+			}
+			if v.EmailHash == emailHash {
+				model.existingEmail = true
+			}
+			if v.UsernameHash != usernameHash && v.EmailHash != emailHash {
+				return nil, eventstore.ErrInvalidEvent
+			}
+		case UserRegistrationStarted:
+			v, err := DecodeUserRegistrationStartedEvent(e.Event)
+			if err != nil {
+				return nil, err
+			}
+			if v.UserRegistrationStartedID == registrationID || v.UserID == userID {
+				return nil, eventstore.ErrConflict
+			}
+			return nil, eventstore.ErrInvalidEvent
+		default:
+			return nil, eventstore.ErrInvalidEvent
+		}
 	}
 	return model, nil
 }
 
-func (m *startUserRegistrationContext) handle(resolved eventstore.ResolvedEvent) {
-	if resolved.Event.EventType == UserRegistered {
-		usernameHash, _ := resolved.Event.Data[UserRegisteredUsernameHashField].(string)
-		emailHash, _ := resolved.Event.Data[UserRegisteredEmailHashField].(string)
-		if usernameHash == m.usernameHash {
-			m.existingUsername = true
-		}
-		if emailHash == m.emailHash {
-			m.existingEmail = true
-		}
-	}
+func startUserRegistrationQuery(usernameHash, emailHash, registrationID, userID string) eventstore.Query {
+	query := startUserRegistrationUserRegisteredByUsernameOrEmailQuery(usernameHash, emailHash)
+	collision := startUserRegistrationCollisionQuery(registrationID, userID)
+	query.Criteria = append(query.Criteria, collision.Criteria...)
+	return query
 }
 
 func startUserRegistrationUserRegisteredByUsernameOrEmailQuery(usernameHash, emailHash string) eventstore.Query {

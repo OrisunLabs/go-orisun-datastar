@@ -8,31 +8,21 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type RequestAccountDeletionCommand struct {
-	User     views.User
-	Password string
-	Metadata CommandMetadata
+	UserRegisteredID string
+	AuthUserID       string
+	Password         string
+	Metadata         CommandMetadata
 }
 
-func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAccountDeletionCommand, credentials PasswordCredentialReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (string, error) {
+func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAccountDeletionCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) (string, error) {
 	if err := commandlimits.Assert(command); err != nil {
 		return "", err
 	}
-	if command.User.UserRegisteredID == "" {
-		return "", errors.New("user is required")
-	}
-	credentialUser, _, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
-	if err != nil {
-		return "", errors.New("invalid password")
-	}
-	if credentialUser.UserRegisteredID != command.User.UserRegisteredID || credentialUser.ID != command.User.ID {
-		return "", errors.New("password credential does not belong to account")
-	}
-	model, err := loadAccountDeletionRequestContext(ctx, command.User.UserRegisteredID, retriever)
+	model, err := loadAccountDeletionRequestContext(ctx, command, retriever)
 	if err != nil {
 		return "", err
 	}
@@ -42,9 +32,6 @@ func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAc
 	if err := bcrypt.CompareHashAndPassword([]byte(model.passwordHash), []byte(command.Password)); err != nil {
 		return "", errors.New("invalid password")
 	}
-	if model.requestedID != "" && model.requestedAuthUserID != command.User.ID {
-		return "", eventstore.ErrConflict
-	}
 	if model.deleted || model.requestedID != "" {
 		return model.requestedID, nil
 	}
@@ -53,7 +40,7 @@ func RequestAccountDeletionCommandHandler(ctx context.Context, command RequestAc
 	if err != nil {
 		return "", err
 	}
-	event, err := NewAccountDeletionRequestedEvent(requestID, time.Now(), command.User.ID, command.User.UserRegisteredID, operationID, nil)
+	event, err := NewAccountDeletionRequestedEvent(requestID, time.Now(), command.AuthUserID, command.UserRegisteredID, operationID, nil)
 	if err != nil {
 		return "", err
 	}
@@ -67,6 +54,7 @@ type accountDeletionRequestContext struct {
 	userExists          bool
 	passwordHash        string
 	passwordPosition    *eventstore.Position
+	registeredPosition  eventstore.Position
 	requestedID         string
 	requestedAuthUserID string
 	operationID         string
@@ -74,28 +62,33 @@ type accountDeletionRequestContext struct {
 	deletedAuthUserID   string
 	deleted             bool
 	position            eventstore.Position
-	events              []eventstore.ResolvedEvent
 	query               eventstore.Query
 }
 
-func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID string, retriever eventstore.LatestRetriever) (*accountDeletionRequestContext, error) {
+func loadAccountDeletionRequestContext(ctx context.Context, command RequestAccountDeletionCommand, retriever eventstore.LatestRetriever) (*accountDeletionRequestContext, error) {
+	userRegisteredID := command.UserRegisteredID
+	if !validAuthID(userRegisteredID) || !validAuthID(command.AuthUserID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
 	query := requestAccountDeletionCombineQueries(requestAccountDeletionUserRegisteredQuery(userRegisteredID), requestAccountDeletionAccountDeletionRequestedByUserQuery(userRegisteredID), requestAccountDeletionAccountDeletedByUserQuery(userRegisteredID), requestAccountDeletionPasswordChangedByUserQuery(userRegisteredID))
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
-	model := &accountDeletionRequestContext{position: latest.ContextPosition, events: eventstore.EventsFromLatest(latest.Results), query: query}
-	for _, resolved := range model.events {
+	model := &accountDeletionRequestContext{position: latest.ContextPosition, query: query}
+	for _, resolved := range eventstore.EventsFromLatest(latest.Results) {
 		switch resolved.Event.EventType {
 		case UserRegistered:
 			value, err := DecodeUserRegisteredEvent(resolved.Event)
 			if err != nil {
 				return nil, err
 			}
-			if value.UserRegisteredID != userRegisteredID {
+			// Accepted registration is the identity used for both auth_user.id and user_registered_id.
+			if value.UserRegisteredID != userRegisteredID || value.UserRegisteredID != command.AuthUserID {
 				return nil, eventstore.ErrInvalidEvent
 			}
 			model.userExists = true
+			model.registeredPosition = resolved.Position
 			if model.passwordPosition == nil {
 				model.passwordHash = value.PasswordHash
 			}
@@ -138,6 +131,12 @@ func loadAccountDeletionRequestContext(ctx context.Context, userRegisteredID str
 		default:
 			return nil, eventstore.ErrInvalidEvent
 		}
+	}
+	if model.userExists && model.passwordPosition != nil && !model.passwordPosition.After(model.registeredPosition) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	if model.requestedID != "" && model.requestedAuthUserID != command.AuthUserID {
+		return nil, eventstore.ErrConflict
 	}
 	if model.deleted && (model.deletedOperationID != model.operationID || model.deletedAuthUserID != model.requestedAuthUserID) {
 		return nil, errors.New("account deleted scope does not match request context")

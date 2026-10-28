@@ -10,19 +10,17 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 )
 
-func deletionWorkflowFixture(t *testing.T) (*eventstore.EmbeddedOrisun, RequestAccountDeletionCommand, ownershipCredentials) {
+func deletionWorkflowFixture(t *testing.T) (*eventstore.EmbeddedOrisun, RequestAccountDeletionCommand) {
 	t.Helper()
 	owner := uuidv7.NewString()
 	store := eventstoretest.New(t, registeredAuthEvent(t, owner))
-	user := views.User{ID: owner, UserRegisteredID: owner, Email: "test@example.com"}
-	return store, RequestAccountDeletionCommand{User: user, Password: "secret123"}, ownershipCredentials{user: user, hash: testAuthHash(t)}
+	return store, RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: "secret123"}
 }
 func TestAccountDeletionSeparateReactionsAndStableOperation(t *testing.T) {
-	store, command, credentials := deletionWorkflowFixture(t)
-	id, err := RequestAccountDeletionCommandHandler(t.Context(), command, credentials, store, store)
+	store, command := deletionWorkflowFixture(t)
+	id, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,10 +29,10 @@ func TestAccountDeletionSeparateReactionsAndStableOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.OperationID == id || request.OperationID == command.User.UserRegisteredID {
+	if request.OperationID == id || request.OperationID == command.UserRegisteredID {
 		t.Fatal("workflow reused authority identity for domain operation")
 	}
-	retry, err := RequestAccountDeletionCommandHandler(t.Context(), command, credentials, store, store)
+	retry, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, store)
 	if err != nil || retry != id {
 		t.Fatalf("request retry replaced operation: %v", err)
 	}
@@ -81,8 +79,8 @@ func TestAccountDeletionSeparateReactionsAndStableOperation(t *testing.T) {
 	}
 }
 func TestAccountDeletionExecutionRetriesCleanupFailure(t *testing.T) {
-	store, command, credentials := deletionWorkflowFixture(t)
-	if _, err := RequestAccountDeletionCommandHandler(t.Context(), command, credentials, store, store); err != nil {
+	store, command := deletionWorkflowFixture(t)
+	if _, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, store); err != nil {
 		t.Fatal(err)
 	}
 	source := resetOutcomeFacts(t, store, AccountDeletionRequested)[0]
@@ -103,7 +101,7 @@ func TestAccountDeletionExecutionRetriesCleanupFailure(t *testing.T) {
 	}
 }
 func TestConcurrentDeletionRequestsKeepOneFrozenOperation(t *testing.T) {
-	store, command, credentials := deletionWorkflowFixture(t)
+	store, command := deletionWorkflowFixture(t)
 	ready := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var once sync.Once
@@ -135,7 +133,7 @@ func TestConcurrentDeletionRequestsKeepOneFrozenOperation(t *testing.T) {
 	results := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := RequestAccountDeletionCommandHandler(t.Context(), command, credentials, store, retriever)
+			_, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, retriever)
 			results <- err
 		}()
 	}
@@ -166,7 +164,7 @@ func TestConcurrentDeletionRequestsKeepOneFrozenOperation(t *testing.T) {
 	if successes != 1 || conflicts != 1 || len(requests) != 1 {
 		t.Fatal("concurrent requests allocated multiple committed operations")
 	}
-	id, err := RequestAccountDeletionCommandHandler(t.Context(), command, credentials, store, store)
+	id, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, store)
 	if err != nil || id != requests[0].Event.EventID {
 		t.Fatalf("retry did not recover accepted request: %v", err)
 	}

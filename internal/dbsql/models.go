@@ -24,6 +24,11 @@ type AuthAccount struct {
 	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AuthErasedUser struct {
+	UserID         string `json:"user_id"`
+	EventPositions []byte `json:"event_positions"`
+}
+
 type AuthSession struct {
 	ID             string             `json:"id"`
 	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`

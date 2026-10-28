@@ -8,30 +8,22 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/commandlimits"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type ChangePasswordCommand struct {
-	User            views.User
-	CurrentPassword string
-	NewPassword     string
-	Metadata        CommandMetadata
+	UserRegisteredID string
+	CurrentPassword  string
+	NewPassword      string
+	Metadata         CommandMetadata
 }
 
-func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCommand, credentials PasswordCredentialReader, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
+func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCommand, saver eventstore.SaverV2, retriever eventstore.LatestRetriever) error {
 	if err := commandlimits.Assert(command); err != nil {
 		return err
 	}
 	if len(command.NewPassword) < 6 {
 		return errors.New("password must be at least 6 characters")
-	}
-	credentialUser, _, err := credentials.UserByEmailWithPassword(ctx, command.User.Email)
-	if err != nil {
-		return err
-	}
-	if credentialUser.UserRegisteredID != command.User.UserRegisteredID {
-		return errors.New("password credential does not belong to registered user")
 	}
 	model, err := loadChangePasswordContext(ctx, command, retriever)
 	if err != nil {
@@ -50,7 +42,7 @@ func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCom
 	}
 
 	eventID := uuidv7.NewString()
-	event, err := NewPasswordChangedEvent(eventID, time.Now(), command.User.UserRegisteredID, string(newHash), nil)
+	event, err := NewPasswordChangedEvent(eventID, time.Now(), command.UserRegisteredID, string(newHash), nil)
 	if err != nil {
 		return err
 	}
@@ -59,29 +51,39 @@ func ChangePasswordCommandHandler(ctx context.Context, command ChangePasswordCom
 }
 
 type changePasswordContext struct {
-	userRegisteredID string
-	passwordHash     string
-	passwordPosition *eventstore.Position
-	userExists       bool
-	position         eventstore.Position
-	events           []eventstore.ResolvedEvent
-	query            eventstore.Query
+	userRegisteredID   string
+	passwordHash       string
+	passwordPosition   *eventstore.Position
+	userExists         bool
+	deleted            bool
+	registeredPosition eventstore.Position
+	position           eventstore.Position
+	query              eventstore.Query
 }
 
 func loadChangePasswordContext(ctx context.Context, command ChangePasswordCommand, retriever eventstore.LatestRetriever) (*changePasswordContext, error) {
-	userQuery := changePasswordUserRegisteredQuery(command.User.UserRegisteredID)
-	passwordQuery := changePasswordPasswordChangedByUserQuery(command.User.UserRegisteredID)
-	query := changePasswordCombineQueries(userQuery, passwordQuery)
+	if !validAuthID(command.UserRegisteredID) {
+		return nil, eventstore.ErrInvalidEvent
+	}
+	userQuery := changePasswordUserRegisteredQuery(command.UserRegisteredID)
+	passwordQuery := changePasswordPasswordChangedByUserQuery(command.UserRegisteredID)
+	query := changePasswordCombineQueries(userQuery, passwordQuery, changePasswordAccountDeletedQuery(command.UserRegisteredID))
 	latest, err := retriever.GetLatestByCriteria(ctx, query.Criteria)
 	if err != nil {
 		return nil, err
 	}
 	events := eventstore.EventsFromLatest(latest.Results)
-	model := &changePasswordContext{userRegisteredID: command.User.UserRegisteredID, position: latest.ContextPosition, events: events, query: query}
+	model := &changePasswordContext{userRegisteredID: command.UserRegisteredID, position: latest.ContextPosition, query: query}
 	for _, resolved := range events {
 		if err := model.handle(resolved); err != nil {
 			return nil, err
 		}
+	}
+	if model.deleted {
+		return nil, eventstore.ErrNotFound
+	}
+	if model.userExists && model.passwordPosition != nil && !model.passwordPosition.After(model.registeredPosition) {
+		return nil, eventstore.ErrInvalidEvent
 	}
 	return model, nil
 }
@@ -98,9 +100,20 @@ func (m *changePasswordContext) handle(resolved eventstore.ResolvedEvent) error 
 			return eventstore.ErrInvalidEvent
 		}
 		m.userExists = true
+		m.registeredPosition = resolved.Position
 		if m.passwordPosition == nil {
 			m.passwordHash = value.PasswordHash
 		}
+		return nil
+	case AccountDeleted:
+		value, err := DecodeAccountDeletedEvent(resolved.Event)
+		if err != nil {
+			return err
+		}
+		if value.Scopes.UserRegisteredID != m.userRegisteredID {
+			return eventstore.ErrInvalidEvent
+		}
+		m.deleted = true
 		return nil
 	case PasswordChanged:
 		value, err := DecodePasswordChangedEvent(resolved.Event)
@@ -143,4 +156,8 @@ func changePasswordUserRegisteredQuery(userRegisteredID string) eventstore.Query
 		{Key: eventstore.EventTypeField, Value: UserRegistered},
 		{Key: UserRegisteredIDField, Value: userRegisteredID},
 	}}}}
+}
+
+func changePasswordAccountDeletedQuery(userID string) eventstore.Query {
+	return eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: AccountDeleted}, {Key: ScopeUserRegisteredIDField, Value: userID}}}}}
 }

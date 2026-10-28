@@ -1,111 +1,85 @@
 package auth
 
 import (
-	"context"
-	"errors"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
-	"golang.org/x/crypto/bcrypt"
 )
 
-type ownershipCredentials struct {
-	user views.User
-	hash string
-	err  error
-}
-
-func (c ownershipCredentials) UserByEmailWithPassword(context.Context, string) (views.User, string, error) {
-	return c.user, c.hash, c.err
-}
-
-func TestCredentialOwnershipBeforePasswordAndDeletionCommands(t *testing.T) {
-	for _, intent := range []string{"password change", "deletion request"} {
-		t.Run(intent, func(t *testing.T) {
-			for _, scenario := range []string{"matching owner", "foreign registered user", "foreign auth user", "missing owner", "incorrect password", "lookup failure"} {
-				t.Run(scenario, func(t *testing.T) {
-					target, foreign := uuidv7.NewString(), uuidv7.NewString()
-					user := views.User{ID: target, UserRegisteredID: target, Email: "test@example.com"}
-					credentials := ownershipCredentials{user: user, hash: testAuthHash(t)}
-					password := "secret123"
-					reject := false
-					ownerMismatch := false
-					switch scenario {
-					case "foreign registered user":
-						credentials.user.UserRegisteredID = foreign
-						reject = true
-						ownerMismatch = true
-					case "foreign auth user":
-						credentials.user.ID = foreign
-						reject = intent == "deletion request"
-						ownerMismatch = reject
-					case "missing owner":
-						credentials.user = views.User{}
-						reject = true
-						ownerMismatch = true
-					case "incorrect password":
-						password = "incorrect"
-						reject = true
-					case "lookup failure":
-						credentials.err = errors.New("lookup unavailable")
-						reject = true
-					}
-					store := eventstoretest.New(t, registeredAuthEvent(t, target))
-					eventType := PasswordChanged
-					var err error
-					if intent == "password change" {
-						err = ChangePasswordCommandHandler(t.Context(), ChangePasswordCommand{User: user, CurrentPassword: password, NewPassword: "updated123"}, credentials, store, store)
-					} else {
-						eventType = AccountDeletionRequested
-						var requestID string
-						requestID, err = RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: password}, credentials, store, store)
-						if reject && requestID != "" {
-							t.Fatal("rejected deletion returned an identity")
-						}
-					}
-					if reject && err == nil {
-						t.Fatal("invalid credentials accepted")
-					}
-					if !reject && err != nil {
-						t.Fatal(err)
-					}
-					if ownerMismatch && err != nil && !strings.Contains(err.Error(), "does not belong") {
-						t.Fatalf("ownership was not explicitly checked: %v", err)
-					}
-					facts, readErr := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: eventType}, {Key: ScopeUserRegisteredIDField, Value: target}}}}})
-					if readErr != nil {
-						t.Fatal(readErr)
-					}
-					expected := 1
-					if reject {
-						expected = 0
-					}
-					if len(facts) != expected {
-						t.Fatalf("saved %d facts, want %d", len(facts), expected)
-					}
-					if !reject && intent == "password change" {
-						changed, err := DecodePasswordChangedEvent(facts[0].Event)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := bcrypt.CompareHashAndPassword([]byte(changed.PasswordHash), []byte("updated123")); err != nil {
-							t.Fatal("saved password differs from accepted command")
-						}
-					}
-					if !reject && intent == "deletion request" {
-						requested, err := DecodeAccountDeletionRequestedEvent(facts[0].Event)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if requested.AuthUserID != target || requested.Scopes.UserRegisteredID != target {
-							t.Fatal("saved deletion has wrong owner")
-						}
-					}
-				})
+func TestDeletionRequestUsesAuthenticatedIDsAndEventPassword(t *testing.T) {
+	for _, scenario := range []string{"matching owner", "foreign registered user", "foreign auth user", "missing auth user", "invalid registered user", "incorrect password", "missing registration", "latest password", "stale password", "password before registration", "foreign pending auth user"} {
+		t.Run(scenario, func(t *testing.T) {
+			owner, foreign := uuidv7.NewString(), uuidv7.NewString()
+			command := RequestAccountDeletionCommand{UserRegisteredID: owner, AuthUserID: owner, Password: "secret123"}
+			root := registeredAuthEvent(t, owner)
+			facts := []eventstore.DomainEvent{root}
+			reject := false
+			switch scenario {
+			case "foreign registered user":
+				command.UserRegisteredID = foreign
+				reject = true
+			case "foreign auth user":
+				command.AuthUserID = foreign
+				reject = true
+			case "missing auth user":
+				command.AuthUserID = ""
+				reject = true
+			case "invalid registered user":
+				command.UserRegisteredID = "invalid"
+				reject = true
+			case "incorrect password":
+				command.Password = "wrong"
+				reject = true
+			case "missing registration":
+				facts = nil
+				reject = true
+			case "latest password", "stale password", "password before registration":
+				changed := mustAuthEvent(NewPasswordChangedEvent(uuidv7.NewString(), time.Now(), owner, authorityPasswordHash(t, "current-secret"), nil))
+				facts = append(facts, changed)
+				if scenario == "latest password" {
+					command.Password = "current-secret"
+				} else {
+					reject = true
+				}
+				if scenario == "password before registration" {
+					facts = []eventstore.DomainEvent{changed, root}
+					command.Password = "current-secret"
+				}
+			case "foreign pending auth user":
+				facts = append(facts, mustAuthEvent(NewAccountDeletionRequestedEvent(uuidv7.NewString(), time.Now(), foreign, owner, uuidv7.NewString(), nil)))
+				reject = true
+			}
+			store := eventstoretest.New(t, facts...)
+			before := len(resetOutcomeFacts(t, store, AccountDeletionRequested))
+			id, err := RequestAccountDeletionCommandHandler(t.Context(), command, store, store)
+			if reject && (err == nil || id != "") {
+				t.Fatal("invalid ownership or password accepted")
+			}
+			if !reject && (err != nil || id == "") {
+				t.Fatalf("accepted identity rejected: %v", err)
+			}
+			expected := before
+			if !reject {
+				expected++
+			}
+			requests := resetOutcomeFacts(t, store, AccountDeletionRequested)
+			if len(requests) != expected {
+				t.Fatal("rejected command appended request")
+			}
+			if !reject {
+				saved, err := DecodeAccountDeletionRequestedEvent(requests[len(requests)-1].Event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.AuthUserID != owner || saved.Scopes.UserRegisteredID != owner {
+					t.Fatal("request lost authenticated owner")
+				}
+				if len(resetOutcomeFacts(t, store, AccountDeleted)) != 0 {
+					t.Fatal("request performed domain deletion")
+				}
 			}
 		})
 	}

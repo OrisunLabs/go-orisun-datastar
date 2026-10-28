@@ -13,7 +13,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/uuidv7"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -78,6 +77,13 @@ func nativeAuthProjection(t *testing.T) (*PostgreSQLProjectionRepository, *pgxpo
 		if _, err := pool.Exec(t.Context(), string(owned)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	erased, err := os.ReadFile("../../migrations/005_auth_erased_users.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), string(erased)); err != nil {
+		t.Fatal(err)
 	}
 	return NewPostgreSQLProjectionRepository(pool), pool
 }
@@ -378,7 +384,7 @@ func TestPostgresPasswordResetProjectsOnlyEffectivePasswordChange(t *testing.T) 
 	if _, _, err := sessions.Login(t.Context(), "alice@example.com", "secret123"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, resetCandidateUser{user: views.User{ID: owner, UserRegisteredID: owner}}, store, store)
+	_, err = AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: "token", Password: "updated123"}, resetTokenCandidate{PasswordResetVerification{ID: request, UserID: owner}}, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +476,7 @@ func TestPostgresDeletionSeparatesRequestCleanupAndCompletion(t *testing.T) {
 		}
 		return counts
 	}
-	if _, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{User: user, Password: "secret123"}, users, store, store); err != nil {
+	if _, err := RequestAccountDeletionCommandHandler(t.Context(), RequestAccountDeletionCommand{UserRegisteredID: user.UserRegisteredID, AuthUserID: user.ID, Password: "secret123"}, store, store); err != nil {
 		t.Fatal(err)
 	}
 	for _, count := range snapshot() {
@@ -512,4 +518,107 @@ func TestPostgresDeletionSeparatesRequestCleanupAndCompletion(t *testing.T) {
 	if _, ok, err := keys.GetSubjectDataKey(t.Context(), foreign); err != nil || !ok {
 		t.Fatal("deletion destroyed unrelated subject key")
 	}
+}
+
+func TestPostgresResetAuthorizationNeedsOnlyTokenDiscovery(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	history, keys := authProjectionHistory(t)
+	store := eventstoretest.New(t, history[0].Event)
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, UserRegistered), repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	requested, err := RequestPasswordResetCommandHandler(t.Context(), RequestPasswordResetCommand{EmailAddress: "alice@example.com"}, store, store, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ProjectBatch(t.Context(), resetOutcomeFacts(t, store, PasswordResetRequested), repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Only this isolated test schema is changed. Token discovery must not join or read user projection rows.
+	if _, err := pool.Exec(t.Context(), "DROP TABLE auth_user CASCADE"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := AuthorizePasswordResetCommandHandler(t.Context(), ResetPasswordCommand{Token: requested.Token, Password: "updated123"}, NewVerificationStore(pool), store, store)
+	if err != nil || id == "" {
+		t.Fatalf("authorization depended on full user projection: %v", err)
+	}
+	authorized := resetOutcomeFacts(t, store, PasswordResetAuthorized)
+	if len(authorized) != 1 || len(resetOutcomeFacts(t, store, PasswordChanged)) != 0 {
+		t.Fatal("authorization bypassed its stage boundary")
+	}
+	writeContext, err := store.GetWriteContext(t.Context(), authorized[0].WriteID)
+	if err != nil || len(writeContext.Consistency) != 2 || len(writeContext.Consistency[0].Query.Criteria) != 5 {
+		t.Fatal("workflow/deletion and collision observations not retained")
+	}
+}
+
+func TestPostgresRegistrationReadinessRequiresVerifiedUserAndCredential(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	history, keys := authProjectionHistory(t)
+	root := history[0].Event
+	registered, err := DecodeUserRegisteredEvent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := NewAuthUserStore(pool)
+	ready, err := users.RegistrationReady(t.Context(), registered.UserRegisteredID)
+	if err != nil || ready {
+		t.Fatal("missing projection reported ready")
+	}
+	if err := ProjectBatch(t.Context(), history[:1], repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = users.RegistrationReady(t.Context(), registered.UserRegisteredID)
+	if err != nil || !ready {
+		t.Fatalf("verified credential projection not ready: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE auth_user SET email_verified=false,email_verified_at=NULL WHERE id=$1", registered.UserRegisteredID); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = users.RegistrationReady(t.Context(), registered.UserRegisteredID)
+	if err != nil || ready {
+		t.Fatal("unverified user reported ready")
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE auth_user SET email_verified=true,email_verified_at=now() WHERE id=$1", registered.UserRegisteredID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), "DELETE FROM auth_account WHERE user_id=$1", registered.UserRegisteredID); err != nil {
+		t.Fatal(err)
+	}
+	ready, err = users.RegistrationReady(t.Context(), registered.UserRegisteredID)
+	if err != nil || ready {
+		t.Fatal("user without credential reported ready")
+	}
+}
+
+func TestPostgresPasswordResetReadinessUsesFullEffectPosition(t *testing.T) {
+	repo, pool := nativeAuthProjection(t)
+	history, keys := authProjectionHistory(t)
+	root, err := DecodeUserRegisteredEvent(history[0].Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := NewAuthUserStore(pool)
+	check := func(p eventstore.Position, want bool) {
+		t.Helper()
+		got, err := users.PasswordResetReady(t.Context(), root.UserRegisteredID, p)
+		if err != nil || got != want {
+			t.Fatalf("readiness at %+v: %v %v", p, got, err)
+		}
+	}
+	check(history[0].Position, false)
+	if err := ProjectBatch(t.Context(), history[:1], repo, keys, ProfileSource{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	check(history[0].Position, true)
+	later := history[0].Position
+	later.Prepare++
+	check(later, false)
+	later = history[0].Position
+	later.Commit++
+	check(later, false)
+	if _, err := pool.Exec(t.Context(), "DELETE FROM auth_account WHERE user_id=$1", root.UserRegisteredID); err != nil {
+		t.Fatal(err)
+	}
+	check(history[0].Position, false)
 }

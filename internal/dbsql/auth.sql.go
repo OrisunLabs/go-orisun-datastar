@@ -172,6 +172,33 @@ func (q *Queries) MarkAuthUserEmailVerified(ctx context.Context, userRegisteredI
 	return err
 }
 
+const passwordResetReady = `-- name: PasswordResetReady :one
+SELECT EXISTS (SELECT 1
+               FROM auth_user u
+                        JOIN auth_account a ON a.id = u.id || ':credential'
+               WHERE u.id = $1
+                 AND u.user_registered_id = $1
+                 AND u.email_verified
+                 AND a.user_id = u.id
+                 AND a.provider_id = 'credential'
+                 AND NULLIF(a.password, '') IS NOT NULL
+                 AND (u.last_event_commit_position, u.last_event_prepare_position) >=
+                     ($2::bigint, $3::bigint)) AS ready
+`
+
+type PasswordResetReadyParams struct {
+	UserRegisteredID string `json:"user_registered_id"`
+	CommitPosition   int64  `json:"commit_position"`
+	PreparePosition  int64  `json:"prepare_position"`
+}
+
+func (q *Queries) PasswordResetReady(ctx context.Context, arg PasswordResetReadyParams) (bool, error) {
+	row := q.db.QueryRow(ctx, passwordResetReady, arg.UserRegisteredID, arg.CommitPosition, arg.PreparePosition)
+	var ready bool
+	err := row.Scan(&ready)
+	return ready, err
+}
+
 const passwordResetVerificationByToken = `-- name: PasswordResetVerificationByToken :one
 SELECT id, identifier
 FROM auth_verification
@@ -443,4 +470,23 @@ func (q *Queries) UserBySessionToken(ctx context.Context, token string) (UserByS
 		&i.HeaderImageUrl,
 	)
 	return i, err
+}
+
+const userRegistrationReady = `-- name: UserRegistrationReady :one
+SELECT EXISTS (SELECT 1
+               FROM auth_user u
+                        JOIN auth_account a ON a.id = u.id || ':credential'
+               WHERE u.id = $1
+                 AND u.user_registered_id = $1
+                 AND u.email_verified
+                 AND a.user_id = u.id
+                 AND a.provider_id = 'credential'
+                 AND NULLIF(a.password, '') IS NOT NULL) AS ready
+`
+
+func (q *Queries) UserRegistrationReady(ctx context.Context, userRegisteredID string) (bool, error) {
+	row := q.db.QueryRow(ctx, userRegistrationReady, userRegisteredID)
+	var ready bool
+	err := row.Scan(&ready)
+	return ready, err
 }

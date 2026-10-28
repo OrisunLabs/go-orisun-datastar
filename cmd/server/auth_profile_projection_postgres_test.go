@@ -78,6 +78,13 @@ func nativeOwnedAuthProjection(t *testing.T) (*auth.PostgreSQLProjectionReposito
 	if _, err := pool.Exec(t.Context(), "DROP TABLE profile_stats"); err != nil {
 		t.Fatal(err)
 	}
+	erased, err := os.ReadFile("../../migrations/005_auth_erased_users.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), string(erased)); err != nil {
+		t.Fatal(err)
+	}
 	return auth.NewPostgreSQLProjectionRepository(pool), pool
 }
 
@@ -201,5 +208,36 @@ func TestPostgresAuthProfileClearingPreservesOtherFacts(t *testing.T) {
 	}
 	if current.Bio != "" || current.HeaderImageURL != "/uploads/header.png" || current.Image != "/uploads/avatar.png" || current.Name != "Updated name" {
 		t.Fatal("clearing bio erased other owning facts")
+	}
+}
+
+func TestPostgresAuthSkipsErasedProfileSourcesWithoutKeys(t *testing.T) {
+	repo, pool := nativeOwnedAuthProjection(t)
+	history, _ := authProfileHistory(t)
+	user := history[0].Event.EventID
+	// The composition fixture intentionally has no profile table: erasure is auth-owned evidence.
+	if _, err := pool.Exec(t.Context(), "INSERT INTO auth_erased_users(user_id) VALUES ($1)", user); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.ProjectBatch(t.Context(), history, repo, nil, authProfileSource(), nil); err != nil {
+		t.Fatalf("composed profile facts needed erased keys: %v", err)
+	}
+	for _, e := range history {
+		if err := repo.WithinTransaction(t.Context(), func(ctx context.Context) error {
+			owner, err := repo.Processed(ctx, e.Position)
+			if err != nil {
+				return err
+			}
+			if owner != user {
+				t.Fatal("composed occurrence lost")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := pool.QueryRow(t.Context(), "SELECT count(*) FROM auth_user").Scan(&count); err != nil || count != 0 {
+		t.Fatal("composed profile source resurrected user")
 	}
 }

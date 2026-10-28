@@ -76,7 +76,7 @@ func TestNameCommandUsesEffectiveNameAndSkipsUnchangedInput(t *testing.T) {
 				t.Fatal("retry duplicated rename")
 			}
 			writeContext, err := store.GetWriteContext(t.Context(), saved[len(saved)-1].WriteID)
-			if err != nil || len(writeContext.Consistency) != 1 || len(writeContext.Consistency[0].Query.Criteria) != 2 {
+			if err != nil || len(writeContext.Consistency) != 1 || len(writeContext.Consistency[0].Query.Criteria) != 3 {
 				t.Fatal("rename lost exact combined observation")
 			}
 		})

@@ -5,6 +5,10 @@ SELECT pg_advisory_xact_lock(734100003);
 SELECT id
 FROM auth_user
 WHERE event_positions ? @occurrence_key::text
+UNION ALL
+SELECT user_id AS id
+FROM auth_erased_users
+WHERE event_positions ? @occurrence_key::text
 LIMIT 1;
 
 -- name: LoadAuthProjection :one
@@ -63,3 +67,16 @@ VALUES (@id, @identifier, @value, @expires_at);
 SELECT user_id
 FROM auth_account
 WHERE id = @id;
+
+-- name: AuthProjectionErased :one
+SELECT EXISTS (SELECT 1 FROM auth_erased_users WHERE user_id = @user_id) AS erased;
+
+-- name: MarkAuthProjectionErased :exec
+INSERT INTO auth_erased_users(user_id, event_positions)
+VALUES (@user_id, coalesce((SELECT event_positions FROM auth_user WHERE id = @user_id), '{}'::jsonb))
+ON CONFLICT(user_id) DO UPDATE SET event_positions = auth_erased_users.event_positions || excluded.event_positions;
+
+-- name: RecordErasedAuthOccurrence :execrows
+UPDATE auth_erased_users
+SET event_positions = event_positions || @event_positions::jsonb
+WHERE user_id = @user_id;

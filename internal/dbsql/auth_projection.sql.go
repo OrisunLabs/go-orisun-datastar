@@ -28,6 +28,10 @@ const authOccurrenceOwner = `-- name: AuthOccurrenceOwner :one
 SELECT id
 FROM auth_user
 WHERE event_positions ? $1::text
+UNION ALL
+SELECT user_id AS id
+FROM auth_erased_users
+WHERE event_positions ? $1::text
 LIMIT 1
 `
 
@@ -36,6 +40,17 @@ func (q *Queries) AuthOccurrenceOwner(ctx context.Context, occurrenceKey string)
 	var id string
 	err := row.Scan(&id)
 	return id, err
+}
+
+const authProjectionErased = `-- name: AuthProjectionErased :one
+SELECT EXISTS (SELECT 1 FROM auth_erased_users WHERE user_id = $1) AS erased
+`
+
+func (q *Queries) AuthProjectionErased(ctx context.Context, userID string) (bool, error) {
+	row := q.db.QueryRow(ctx, authProjectionErased, userID)
+	var erased bool
+	err := row.Scan(&erased)
+	return erased, err
 }
 
 const loadAuthProjection = `-- name: LoadAuthProjection :one
@@ -133,6 +148,36 @@ SELECT pg_advisory_xact_lock(734100003)
 func (q *Queries) LockAuthProjection(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, lockAuthProjection)
 	return err
+}
+
+const markAuthProjectionErased = `-- name: MarkAuthProjectionErased :exec
+INSERT INTO auth_erased_users(user_id, event_positions)
+VALUES ($1, coalesce((SELECT event_positions FROM auth_user WHERE id = $1), '{}'::jsonb))
+ON CONFLICT(user_id) DO UPDATE SET event_positions = auth_erased_users.event_positions || excluded.event_positions
+`
+
+func (q *Queries) MarkAuthProjectionErased(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, markAuthProjectionErased, userID)
+	return err
+}
+
+const recordErasedAuthOccurrence = `-- name: RecordErasedAuthOccurrence :execrows
+UPDATE auth_erased_users
+SET event_positions = event_positions || $1::jsonb
+WHERE user_id = $2
+`
+
+type RecordErasedAuthOccurrenceParams struct {
+	EventPositions []byte `json:"event_positions"`
+	UserID         string `json:"user_id"`
+}
+
+func (q *Queries) RecordErasedAuthOccurrence(ctx context.Context, arg RecordErasedAuthOccurrenceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordErasedAuthOccurrence, arg.EventPositions, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const saveAuthCredential = `-- name: SaveAuthCredential :exec

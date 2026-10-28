@@ -33,6 +33,12 @@ func (s *AccountDataDeletionStore) DeleteAccountData(ctx context.Context, userRe
 	}
 	defer tx.Rollback(ctx)
 	queries := dbsql.New(tx)
+	if err := queries.LockAuthProjection(ctx); err != nil {
+		return err
+	}
+	if err := queries.MarkAuthProjectionErased(ctx, userRegisteredID); err != nil {
+		return err
+	}
 	if err := queries.DeleteAuthVerificationsByRegisteredID(ctx, stringPtr(userRegisteredID)); err != nil {
 		return err
 	}

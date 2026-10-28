@@ -6,7 +6,7 @@ import (
 )
 
 templ Base(title string) {
-	<!doctype html>
+	<!DOCTYPE html>
 	<html lang="en">
 		<head>
 			<meta charset="utf-8"/>
@@ -108,18 +108,20 @@ templ AuthForm(action string, title string, fields []Field, errors map[string]st
 				if errors != nil && errors["error"] != "" {
 					<div class="alert alert-error alert-soft">{ errors["error"] }</div>
 				}
-				<form class="auth-form" method="post" action={ action } data-on:submit={ postFormSSE(action) }>
-					for _, field := range fields {
-						<label class="form-field">
-							<span class="font-semibold">{ field.Label }</span>
-							<input class={ "input w-full", templ.KV("input-error", errors != nil && errors[field.Name] != "") } name={ field.Name } type={ field.Type } required/>
-						</label>
-						if errors != nil && errors[field.Name] != "" {
-							<small class="text-error">{ errors[field.Name] }</small>
+				if action != "" {
+					<form class="auth-form" method="post" action={ action } data-on:submit={ postFormSSE(action) }>
+						for _, field := range fields {
+							<label class="form-field">
+								<span class="font-semibold">{ field.Label }</span>
+								<input class={ "input w-full", templ.KV("input-error", errors != nil && errors[field.Name] != "") } name={ field.Name } type={ field.Type } required/>
+							</label>
+							if errors != nil && errors[field.Name] != "" {
+								<small class="text-error">{ errors[field.Name] }</small>
+							}
 						}
-					}
-					<button class="btn btn-primary w-full" type="submit">{ title }</button>
-				</form>
+						<button class="btn btn-primary w-full" type="submit">{ title }</button>
+					</form>
+				}
 				<div class="auth-links">
 					{ children... }
 				</div>

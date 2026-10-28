@@ -13,7 +13,6 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstoretest"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/protectedpii"
-	"github.com/OrisunLabs/go-orisun-datastar/internal/views"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -40,11 +39,6 @@ func (k *signupKeys) DestroySubjectKey(_ context.Context, id string) error {
 	return nil
 }
 
-type forbiddenSignupUserRead struct{}
-
-func (forbiddenSignupUserRead) UserByIDOrRegisteredID(context.Context, string) (views.User, error) {
-	panic("onboarding looked up an auth user before registration completed")
-}
 func signupFacts(t *testing.T, store eventstore.Retriever, kind string) []eventstore.ResolvedEvent {
 	t.Helper()
 	facts, err := store.GetEvents(t.Context(), eventstore.NoEventPosition, 100, eventstore.Forward, eventstore.Query{Criteria: []eventstore.Criterion{{Tags: []eventstore.Tag{{Key: eventstore.EventTypeField, Value: kind}}}}})
@@ -56,7 +50,7 @@ func signupFacts(t *testing.T, store eventstore.Retriever, kind string) []events
 func TestHTTPRegistrationUsesPendingIdentityUntilOTPValidated(t *testing.T) {
 	store := eventstoretest.New(t)
 	keys := &signupKeys{keys: map[string]protectedpii.SubjectDataKey{}}
-	app := Server{EventSaver: store, EventRetriever: store, PIIKeys: keys, AuthUsers: forbiddenSignupUserRead{}}
+	app := Server{EventSaver: store, EventRetriever: store, PIIKeys: keys}
 	submit := func(handler http.HandlerFunc, path string, values url.Values, registrationID string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest("POST", path, strings.NewReader(values.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -95,7 +89,7 @@ func TestHTTPRegistrationUsesPendingIdentityUntilOTPValidated(t *testing.T) {
 		t.Fatal("wrong OTP registered a user")
 	}
 	response = submit(app.validateEmail, "/register/"+id+"/validate-email", url.Values{"otp": {value.OTPCode}}, id)
-	if !strings.Contains(response.Body.String(), "/login") || len(signupFacts(t, store, auth.EmailVerificationOTPValidated)) != 1 || len(signupFacts(t, store, auth.UserRegistered)) != 0 || len(signupFacts(t, store, auth.UserRegistrationCompleted)) != 0 {
+	if !strings.Contains(response.Body.String(), "/register/"+id+"/processing") || len(signupFacts(t, store, auth.EmailVerificationOTPValidated)) != 1 || len(signupFacts(t, store, auth.UserRegistered)) != 0 || len(signupFacts(t, store, auth.UserRegistrationCompleted)) != 0 {
 		t.Fatalf("HTTP executed beyond validation: %s", response.Body.String())
 	}
 	started, err := auth.DecodeUserRegistrationStartedEvent(pending[0].Event)
