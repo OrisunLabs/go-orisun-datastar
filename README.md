@@ -46,6 +46,7 @@ Start PostgreSQL, then run:
 
 ```bash
 task migrate
+task seed         # optional: create demo accounts, profiles, and todos
 task dev
 ```
 
@@ -58,6 +59,21 @@ task build
 ./server
 ```
 
+## Demo data
+
+`task seed` creates two verified accounts and exits after their read models are ready. It uses public commands and never runs automatically during normal startup.
+
+| Username | Email |
+| --- | --- |
+| `alex.demo` | `alex@example.test` |
+| `sam.demo` | `sam@example.test` |
+
+Both accounts use the demo password **`StarterDemo123!`**. Each has a profile bio and four todo histories: active, completed, renamed then reopened, and completed then deleted. Three todos per account are visible; deleted todos stay out of the list.
+
+Run seeding before starting the development server. Successful reruns append no new seed events, and interrupted runs resume from recorded stages. If a reserved identity belongs to someone else or a seeded record was edited, seeding stops instead of overwriting it. No database reset is performed.
+
+Seeding is disabled when `NODE_ENV=production`. See [the development seed contract](docs/development-seed.md) for ownership, readiness, and retry details.
+
 ## Commands
 
 ```bash
@@ -68,7 +84,7 @@ task css-watch    # watch and compile CSS
 task templ        # generate *_templ.go files
 task sqlc         # generate database code
 task migrate      # run database migrations and exit
-task seed         # run seed tasks and exit
+task seed         # create demo data, wait for projections, and exit
 task test         # run Go tests
 task vet          # run go vet
 task build        # build ./cmd/server
@@ -93,7 +109,7 @@ The app has useful defaults. Override these environment variables when needed:
 | `UPLOAD_DIR` | `static/uploads` | Local upload destination |
 | `UPLOAD_BASE_URL` | `/static/uploads` | Public URL prefix for uploaded files |
 | `BETTER_AUTH_SECRET` | development secret | Session/auth secret |
-| `NODE_ENV` | `development` | Controls development cookie behavior and hot reload |
+| `NODE_ENV` | `development` | Controls development cookies and hot reload; production disables seeding |
 
 The `sqlite` branch replaces the Postgres-specific variables with `SQLITE_PATH` and `ORISUN_SQLITE_DIR`.
 
@@ -117,7 +133,7 @@ Keep direct SQL writes limited to read models, auth/session tables, and event-ha
 
 Feature folders are organized around behavior:
 
-- command handlers live in their own files, such as `create_todo.go`, `rename_todo.go`, and `upload_profile_image.go`
+- command handlers live in their own files, such as `create_todos_command_handler.go`, `rename_todos_command_handler.go`, and `upload_profile_image_command_handler.go`
 - each command slice owns its load context instead of depending on a shared aggregate loader
 - event handlers live in their own files, such as `todo_read_model_event_handler.go`
 - read models own query/projection persistence

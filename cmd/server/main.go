@@ -16,6 +16,7 @@ import (
 	"github.com/OrisunLabs/go-orisun-datastar/internal/auth"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/config"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
+	"github.com/OrisunLabs/go-orisun-datastar/internal/developmentseed"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/email"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventcatalog"
 	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
@@ -57,8 +58,9 @@ type eventHandler interface {
 }
 
 type eventHandlerFactory struct {
-	name   string
-	create func() (eventHandler, error)
+	projection bool
+	name       string
+	create     func() (eventHandler, error)
 }
 
 func main() {
@@ -82,6 +84,12 @@ func parseOptions() runOptions {
 }
 
 func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts runOptions, logger *slog.Logger) error {
+	if opts.seedOnly && !cfg.DevelopmentCookie {
+		return fmt.Errorf("development seeding is disabled in production")
+	}
+	if opts.seedOnly && (opts.migrateOnly || opts.resetReadModels) {
+		return fmt.Errorf("seed-only cannot be combined with migration/reset flags")
+	}
 	db, err := postgres.Open(ctx, cfg.PostgresURL)
 	if err != nil {
 		return fmt.Errorf("open postgres: %w", err)
@@ -93,10 +101,6 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 	}
 	if opts.migrateOnly {
 		logger.Info("postgres migrations complete")
-		return nil
-	}
-	if opts.seedOnly {
-		logger.Info("seed requested; no seed tasks are currently defined")
 		return nil
 	}
 	if opts.resetReadModels {
@@ -121,11 +125,34 @@ func run(ctx context.Context, stop context.CancelFunc, cfg config.Config, opts r
 
 	viewStore := newViewStore(bus, logger)
 	components := newAppComponents(db, orisunStore, cfg, logger)
-	handlers, err := startEventHandlers(ctx, eventHandlerFactories(orisunStore, bus, cfg, components, logger))
+	var seeded developmentseed.Result
+	if opts.seedOnly {
+		seeded, err = developmentseed.Seed(ctx, orisunStore, components.piiKeys)
+		if err != nil {
+			return fmt.Errorf("seed development data: %w", err)
+		}
+	}
+	factories := eventHandlerFactories(orisunStore, bus, cfg, components, logger)
+	if opts.seedOnly {
+		factories = projectionFactories(factories)
+	}
+	handlers, err := startEventHandlers(ctx, factories)
 	if err != nil {
 		return err
 	}
 	defer stopEventHandlers(handlers)
+	if opts.seedOnly {
+		readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := developmentseed.WaitForProjections(readyCtx, seeded, developmentseed.Readers{Auth: components.authUsers, Profiles: components.profileReadModel, Todos: components.todoReadModel}); err != nil {
+			return err
+		}
+		logger.Info("development seed ready", "version", seeded.Version, "users", len(seeded.Users))
+		for _, u := range seeded.Users {
+			logger.Info("demo login ready", "email", u.Email)
+		}
+		return nil
+	}
 
 	app := httpui.Server{
 		Sessions:               components.sessionManager,
@@ -275,7 +302,8 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 			},
 		},
 		{
-			name: "auth user projection",
+			name:       "auth user projection",
+			projection: true,
 			create: func() (eventHandler, error) {
 				return auth.NewAuthUserProjectionEventHandler(store, components.checkpointer, components.authProjection, components.piiKeys, authProfileSource(), authUserInvalidator{publisher: bus}, logger)
 			},
@@ -291,13 +319,15 @@ func eventHandlerFactories(store *eventstore.EmbeddedOrisun, bus *natsbus.Bus, c
 			},
 		},
 		{
-			name: "profile read model",
+			name:       "profile read model",
+			projection: true,
 			create: func() (eventHandler, error) {
 				return profile.NewReadModelEventHandler(store, components.checkpointer, components.profileProjection, bus, components.piiKeys, logger)
 			},
 		},
 		{
-			name: "todo read model",
+			name:       "todo read model",
+			projection: true,
 			create: func() (eventHandler, error) {
 				return todo.NewTodoReadModelEventHandler(store, components.checkpointer, components.todoProjection, bus, logger)
 			},
@@ -345,4 +375,16 @@ func serveHTTP(ctx context.Context, stop context.CancelFunc, port string, handle
 		return fmt.Errorf("shutdown server: %w", err)
 	}
 	return nil
+}
+
+// Seed-only runs projections after composing complete public-command histories.
+// It does not execute unrelated pending workflows or start an HTTP listener.
+func projectionFactories(factories []eventHandlerFactory) []eventHandlerFactory {
+	var selected []eventHandlerFactory
+	for _, factory := range factories {
+		if factory.projection {
+			selected = append(selected, factory)
+		}
+	}
+	return selected
 }

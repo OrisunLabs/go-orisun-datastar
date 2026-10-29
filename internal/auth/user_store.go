@@ -58,3 +58,11 @@ func (s *AuthUserStore) RegistrationReady(ctx context.Context, userRegisteredID 
 func (s *AuthUserStore) PasswordResetReady(ctx context.Context, id string, position eventstore.Position) (bool, error) {
 	return s.queries.PasswordResetReady(ctx, dbsql.PasswordResetReadyParams{UserRegisteredID: id, CommitPosition: position.Commit, PreparePosition: position.Prepare})
 }
+
+// ProjectionReached reports the owning read model's full-position watermark.
+func (s *AuthUserStore) ProjectionReached(ctx context.Context, id string, p eventstore.Position) (bool, error) {
+	if p.Commit < 0 || p.Prepare < 0 {
+		return false, eventstore.ErrInvalidEvent
+	}
+	return s.queries.AuthProjectionReached(ctx, dbsql.AuthProjectionReachedParams{ID: id, CommitPosition: p.Commit, PreparePosition: p.Prepare})
+}

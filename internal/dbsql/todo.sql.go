@@ -12,7 +12,8 @@ import (
 )
 
 const deleteTodosByUserID = `-- name: DeleteTodosByUserID :exec
-DELETE FROM todo_items
+DELETE
+FROM todo_items
 WHERE user_id = $1
 `
 
@@ -22,8 +23,9 @@ func (q *Queries) DeleteTodosByUserID(ctx context.Context, userID string) error 
 }
 
 const findProcessedTodoProjection = `-- name: FindProcessedTodoProjection :one
-SELECT todo_id,user_id FROM todo_items
-WHERE (last_event_commit_position,last_event_prepare_position) >= ($1,$2)
+SELECT todo_id, user_id
+FROM todo_items
+WHERE (last_event_commit_position, last_event_prepare_position) >= ($1, $2)
   AND event_positions ? $3::text
 LIMIT 1
 `
@@ -89,11 +91,22 @@ func (q *Queries) ListTodos(ctx context.Context, userID string) ([]ListTodosRow,
 }
 
 const loadTodoProjection = `-- name: LoadTodoProjection :one
-SELECT todo_id,user_id,title,created_at,updated_at,deleted_at,
-       completed_at,completed_commit_position,completed_prepare_position,
-       reopened_at,reopened_commit_position,reopened_prepare_position,
-       last_event_commit_position,last_event_prepare_position
-FROM todo_items WHERE todo_id = $1 FOR UPDATE
+SELECT todo_id,
+       user_id,
+       title,
+       created_at,
+       updated_at,
+       deleted_at,
+       completed_at,
+       completed_commit_position,
+       completed_prepare_position,
+       reopened_at,
+       reopened_commit_position,
+       reopened_prepare_position,
+       last_event_commit_position,
+       last_event_prepare_position
+FROM todo_items
+WHERE todo_id = $1 FOR UPDATE
 `
 
 type LoadTodoProjectionRow struct {
@@ -145,21 +158,29 @@ func (q *Queries) LockTodoProjection(ctx context.Context) error {
 }
 
 const saveTodoProjection = `-- name: SaveTodoProjection :execrows
-INSERT INTO todo_items(todo_id,user_id,title,created_at,updated_at,deleted_at,
- completed_at,completed_commit_position,completed_prepare_position,
- reopened_at,reopened_commit_position,reopened_prepare_position,
- last_event_commit_position,last_event_prepare_position,event_positions)
-VALUES ($1,$2,$3,$4,$5,$6,
- $7,$8,$9,
- $10,$11,$12,
- $13,$14,$15::jsonb)
-ON CONFLICT (todo_id) DO UPDATE SET
- user_id=excluded.user_id,title=excluded.title,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,
- completed_at=excluded.completed_at,completed_commit_position=excluded.completed_commit_position,completed_prepare_position=excluded.completed_prepare_position,
- reopened_at=excluded.reopened_at,reopened_commit_position=excluded.reopened_commit_position,reopened_prepare_position=excluded.reopened_prepare_position,
- last_event_commit_position=excluded.last_event_commit_position,last_event_prepare_position=excluded.last_event_prepare_position,
- event_positions=todo_items.event_positions || excluded.event_positions
-WHERE (todo_items.last_event_commit_position,todo_items.last_event_prepare_position) < (excluded.last_event_commit_position,excluded.last_event_prepare_position)
+INSERT INTO todo_items(todo_id, user_id, title, created_at, updated_at, deleted_at,
+                       completed_at, completed_commit_position, completed_prepare_position,
+                       reopened_at, reopened_commit_position, reopened_prepare_position,
+                       last_event_commit_position, last_event_prepare_position, event_positions)
+VALUES ($1, $2, $3, $4, $5, $6,
+        $7, $8, $9,
+        $10, $11, $12,
+        $13, $14, $15::jsonb)
+ON CONFLICT (todo_id) DO UPDATE SET user_id=excluded.user_id,
+                                    title=excluded.title,
+                                    updated_at=excluded.updated_at,
+                                    deleted_at=excluded.deleted_at,
+                                    completed_at=excluded.completed_at,
+                                    completed_commit_position=excluded.completed_commit_position,
+                                    completed_prepare_position=excluded.completed_prepare_position,
+                                    reopened_at=excluded.reopened_at,
+                                    reopened_commit_position=excluded.reopened_commit_position,
+                                    reopened_prepare_position=excluded.reopened_prepare_position,
+                                    last_event_commit_position=excluded.last_event_commit_position,
+                                    last_event_prepare_position=excluded.last_event_prepare_position,
+                                    event_positions=todo_items.event_positions || excluded.event_positions
+WHERE (todo_items.last_event_commit_position, todo_items.last_event_prepare_position) <
+      (excluded.last_event_commit_position, excluded.last_event_prepare_position)
 `
 
 type SaveTodoProjectionParams struct {
@@ -202,4 +223,25 @@ func (q *Queries) SaveTodoProjection(ctx context.Context, arg SaveTodoProjection
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const todoProjectionReached = `-- name: TodoProjectionReached :one
+SELECT EXISTS (SELECT 1
+               FROM todo_items
+               WHERE todo_id = $1
+                 AND (last_event_commit_position, last_event_prepare_position) >=
+                     ($2::bigint, $3::bigint)) AS reached
+`
+
+type TodoProjectionReachedParams struct {
+	ID              string `json:"id"`
+	CommitPosition  int64  `json:"commit_position"`
+	PreparePosition int64  `json:"prepare_position"`
+}
+
+func (q *Queries) TodoProjectionReached(ctx context.Context, arg TodoProjectionReachedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, todoProjectionReached, arg.ID, arg.CommitPosition, arg.PreparePosition)
+	var reached bool
+	err := row.Scan(&reached)
+	return reached, err
 }

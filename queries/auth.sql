@@ -166,3 +166,10 @@ SELECT EXISTS (SELECT 1
                  AND NULLIF(a.password, '') IS NOT NULL
                  AND (u.last_event_commit_position, u.last_event_prepare_position) >=
                      (@commit_position::bigint, @prepare_position::bigint)) AS ready;
+
+-- name: AuthProjectionReached :one
+SELECT EXISTS (SELECT 1
+               FROM auth_user
+               WHERE id = @id
+                 AND (last_event_commit_position, last_event_prepare_position) >=
+                     (@commit_position::bigint, @prepare_position::bigint)) AS reached;

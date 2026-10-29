@@ -3,6 +3,8 @@ package todo
 import (
 	"context"
 
+	"github.com/OrisunLabs/go-orisun-datastar/internal/eventstore"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/OrisunLabs/go-orisun-datastar/internal/dbsql"
@@ -34,4 +36,12 @@ func (m *ReadModel) List(ctx context.Context, userID string) ([]views.Todo, erro
 		})
 	}
 	return todos, nil
+}
+
+// ProjectionReached reports the owning read model's full-position watermark.
+func (s *ReadModel) ProjectionReached(ctx context.Context, id string, p eventstore.Position) (bool, error) {
+	if p.Commit < 0 || p.Prepare < 0 {
+		return false, eventstore.ErrInvalidEvent
+	}
+	return s.queries.TodoProjectionReached(ctx, dbsql.TodoProjectionReachedParams{ID: id, CommitPosition: p.Commit, PreparePosition: p.Prepare})
 }
