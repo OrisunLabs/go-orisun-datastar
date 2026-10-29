@@ -43,6 +43,7 @@ All project tools are pinned in `go.mod` and invoked with `go tool` through `Tas
 
 ```bash
 task migrate
+task seed         # optional: create demo accounts, profiles, and todos
 task dev
 ```
 
@@ -55,6 +56,21 @@ task build
 ./server
 ```
 
+## Demo data
+
+`task seed` creates two verified accounts and exits after their read models are ready. It uses public commands and never runs automatically during normal startup.
+
+| Username | Email |
+| --- | --- |
+| `alex.demo` | `alex@example.test` |
+| `sam.demo` | `sam@example.test` |
+
+Both accounts use the demo password **`StarterDemo123!`**. Each has a profile bio and four todo histories: active, completed, renamed then reopened, and completed then deleted. Three todos per account are visible; deleted todos stay out of the list.
+
+Run seeding before starting the development server. Successful reruns append no new seed events, and interrupted runs resume from recorded stages. If a reserved identity belongs to someone else or a seeded record was edited, seeding stops instead of overwriting it. No database reset is performed.
+
+Seeding is disabled when `NODE_ENV=production`. See [the development seed contract](docs/development-seed.md) for ownership, readiness, and retry details.
+
 ## Commands
 
 ```bash
@@ -65,7 +81,7 @@ task css-watch    # watch and compile CSS
 task templ        # generate *_templ.go files
 task sqlc         # generate database code
 task migrate      # run database migrations and exit
-task seed         # run seed tasks and exit
+task seed         # create demo data, wait for projections, and exit
 task test         # run Go tests
 task vet          # run go vet
 task build        # build ./cmd/server
@@ -85,7 +101,7 @@ The app has useful defaults. Override these environment variables when needed:
 | `UPLOAD_DIR` | `static/uploads` | Local upload destination |
 | `UPLOAD_BASE_URL` | `/static/uploads` | Public URL prefix for uploaded files |
 | `BETTER_AUTH_SECRET` | development secret | Session/auth secret |
-| `NODE_ENV` | `development` | Controls development cookie behavior and hot reload |
+| `NODE_ENV` | `development` | Controls development cookies and hot reload; production disables seeding |
 
 The SQLite branch needs no external database. Application and event files are separate. Use a fresh database for this starter schema; existing event payloads are not rewritten or upgraded automatically.
 
@@ -139,7 +155,7 @@ task css
 
 ## Backend patterns
 
-Commands use narrow ports, bounded latest-event context reads and one `SaveCommandEventsV2` append preserving every independently checked query and position. Orisun owns persisted write contexts; domain ancestry is separate from consistency metadata. Stateful command tests use real in-memory Orisun SQLite through `internal/eventstoretest` through the same V2 Orisun adapter.
+Commands use narrow ports, bounded latest-event context reads and one `SaveCommandEventsV2` append preserving every independently checked query and position. Orisun owns persisted write contexts; domain ancestry is separate from consistency metadata. Stateful command tests use real in-memory Orisun SQLite through `internal/eventstoretest` and the same V2 Orisun adapter.
 
 See [backend architecture patterns and remaining conversions](docs/backend-patterns.md). Existing NATS KV view-state remains supported.
 

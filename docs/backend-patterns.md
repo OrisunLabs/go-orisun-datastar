@@ -224,3 +224,7 @@ Deletion request success clears the session cookie before the first SSE write an
 ## Auth projection after erasure
 
 Cleanup persists an auth-owned erasure marker and transfers occurrence receipts while removing auth rows under the projection's immediate write transaction. This precedes key destruction, so a backlogged projector need not reach the later `AccountDeleted` event to recognize erased users. Unseen occurrences still pass strict owner decoding; marked identities record only occurrence evidence and never access keys or recreate credentials/tokens. Active identities with missing keys still fail. Retained receipts preserve replay and notification retries after user-row removal. See [auth projection transactions](auth-projection-transactions.md). This slice covers the auth projection, including its composed profile inputs; the separate profile and todo projections remain to be converted.
+
+## Development seed
+
+`internal/developmentseed` composes versioned demo histories through public commands. It reconciles immutable ownership and stable identities before continuing an incomplete prefix, and refuses unrelated edits. Seed-only mode enables projections after composition and waits for every final full-position watermark plus login readiness. Normal startup never seeds. See [development seed](development-seed.md).

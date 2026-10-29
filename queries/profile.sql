@@ -51,3 +51,7 @@ WHERE (p.last_event_commit_position, p.last_event_prepare_position) <=
 DELETE
 FROM profile_stats
 WHERE user_id = @user_registered_id;
+
+-- name: ProfileProjectionReached :one
+SELECT EXISTS (SELECT 1 FROM profile_stats
+ WHERE user_id = @id AND (last_event_commit_position,last_event_prepare_position) >= (@commit_position,@prepare_position)) AS reached;

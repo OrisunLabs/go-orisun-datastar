@@ -196,3 +196,21 @@ func (q *Queries) SaveTodoProjection(ctx context.Context, arg SaveTodoProjection
 	}
 	return result.RowsAffected()
 }
+
+const todoProjectionReached = `-- name: TodoProjectionReached :one
+SELECT EXISTS (SELECT 1 FROM todo_items
+ WHERE todo_id = ?1 AND (last_event_commit_position,last_event_prepare_position) >= (?2,?3)) AS reached
+`
+
+type TodoProjectionReachedParams struct {
+	ID              string `json:"id"`
+	CommitPosition  int64  `json:"commit_position"`
+	PreparePosition int64  `json:"prepare_position"`
+}
+
+func (q *Queries) TodoProjectionReached(ctx context.Context, arg TodoProjectionReachedParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, todoProjectionReached, arg.ID, arg.CommitPosition, arg.PreparePosition)
+	var reached bool
+	err := row.Scan(&reached)
+	return reached, err
+}

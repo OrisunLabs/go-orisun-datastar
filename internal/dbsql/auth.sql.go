@@ -10,6 +10,24 @@ import (
 	"database/sql"
 )
 
+const authProjectionReached = `-- name: AuthProjectionReached :one
+SELECT EXISTS (SELECT 1 FROM auth_user
+ WHERE id = ?1 AND (last_event_commit_position,last_event_prepare_position) >= (?2,?3)) AS reached
+`
+
+type AuthProjectionReachedParams struct {
+	ID              string `json:"id"`
+	CommitPosition  *int64 `json:"commit_position"`
+	PreparePosition *int64 `json:"prepare_position"`
+}
+
+func (q *Queries) AuthProjectionReached(ctx context.Context, arg AuthProjectionReachedParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, authProjectionReached, arg.ID, arg.CommitPosition, arg.PreparePosition)
+	var reached bool
+	err := row.Scan(&reached)
+	return reached, err
+}
+
 const createAuthAccount = `-- name: CreateAuthAccount :exec
 INSERT INTO auth_account (id, account_id, provider_id, user_id, password)
 VALUES (?1, ?2, 'credential', ?3, ?4)

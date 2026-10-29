@@ -39,3 +39,7 @@ WHERE (todo_items.last_event_commit_position,todo_items.last_event_prepare_posit
 -- name: DeleteTodosByUserID :exec
 DELETE FROM todo_items
 WHERE user_id = @user_id;
+
+-- name: TodoProjectionReached :one
+SELECT EXISTS (SELECT 1 FROM todo_items
+ WHERE todo_id = @id AND (last_event_commit_position,last_event_prepare_position) >= (@commit_position,@prepare_position)) AS reached;
